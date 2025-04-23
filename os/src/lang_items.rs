@@ -1,4 +1,4 @@
-use crate::sbi::shutdown;
+use crate::{println, sbi::shutdown};
 use core::panic::PanicInfo;
 
 #[panic_handler]

@@ -1,19 +1,25 @@
 #![no_main]
 #![no_std]
 
-#[macro_use]
+pub mod batch;
 mod console;
 mod lang_items;
 mod sbi;
+mod sync;
+pub mod syscall;
+pub mod trap;
 
 use core::arch::global_asm;
+
 global_asm!(include_str!("entry.asm"));
+global_asm!(include_str!("link_app.S"));
 
 #[unsafe(no_mangle)]
 pub fn rust_main() -> ! {
     clear_bss();
-    println!("Hello, world!");
-    panic!("Shutdown machine!");
+    trap::init();
+    batch::init();
+    batch::run_next_app();
 }
 
 fn clear_bss() {
