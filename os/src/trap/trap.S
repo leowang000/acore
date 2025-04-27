@@ -9,8 +9,8 @@
 .endm
 
     .section .text
-    .globl __alltraps
     .align 2
+    .globl __alltraps
 __alltraps:
     # sp: user stack->kernel stack
     # sscratch: kernel stack->user stack
@@ -37,8 +37,6 @@ __alltraps:
 
     .globl __restore
 __restore:
-    # reuse __restore to start the first task
-    mv sp, a0
     LOAD_GPR 1
     LOAD_GPR 3
     .set n, 5
