@@ -1,17 +1,18 @@
-mod context;
-mod switch;
-mod task;
-
 use crate::{
-    config::*,
-    loader::{app_initial_context, get_num_app},
+    loader::{get_app_data, get_num_app},
     println,
     sbi::shutdown,
     sync::UPSafeCell,
+    trap::TrapContext,
 };
+use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 use task::*;
+
+mod context;
+mod switch;
+mod task;
 
 pub use context::TaskContext;
 
@@ -22,10 +23,23 @@ pub struct TaskManager {
 
 struct TaskManagerInner {
     current_app: usize,
-    tasks: [TaskControlBlock; MAX_APP_NUM],
+    tasks: Vec<TaskControlBlock>,
 }
 
 impl TaskManager {
+    fn run_first(&self) -> ! {
+        let mut task_manager = self.inner.exclusive_access();
+        let switch_from = &mut TaskContext::zero_init() as *mut TaskContext;
+        let switch_to = &task_manager.tasks[0].context as *const TaskContext;
+        task_manager.current_app = 0;
+        task_manager.tasks[0].status = TaskStatus::Running;
+        drop(task_manager);
+        unsafe {
+            __switch(switch_from, switch_to);
+        }
+        unreachable!();
+    }
+
     fn suspend_current(&self) {
         let mut task_manager = self.inner.exclusive_access();
         let current_app = task_manager.current_app;
@@ -41,7 +55,7 @@ impl TaskManager {
     fn run_next(&self) {
         let mut task_manager = self.inner.exclusive_access();
         let next = (task_manager.current_app + 1..=task_manager.current_app + self.num_app)
-            .map(|id| id % MAX_APP_NUM)
+            .map(|id| id % self.num_app)
             .find(|id| task_manager.tasks[*id].status == TaskStatus::Ready);
         if let Some(app_id) = next {
             let current_app = task_manager.current_app;
@@ -59,38 +73,44 @@ impl TaskManager {
         }
     }
 
-    fn run_first(&self) -> ! {
-        let mut task_manager = self.inner.exclusive_access();
-        let switch_from = &mut TaskContext::zero_init() as *mut TaskContext;
-        let switch_to = &task_manager.tasks[0].context as *const TaskContext;
-        task_manager.current_app = 0;
-        task_manager.tasks[0].status = TaskStatus::Running;
-        drop(task_manager);
-        unsafe {
-            __switch(switch_from, switch_to);
-        }
-        unreachable!();
+    fn get_current_satp(&self) -> usize {
+        let task_manager = self.inner.exclusive_access();
+        task_manager.tasks[task_manager.current_app].satp()
     }
+
+    fn get_current_trap_cx(&self) -> &'static mut TrapContext {
+        let task_manager = self.inner.exclusive_access();
+        task_manager.tasks[task_manager.current_app].get_trap_cx()
+    }
+
+    fn change_current_program_brk(&self, size: i32) -> Option<usize> {
+        let mut task_manager = self.inner.exclusive_access();
+        let current_app = task_manager.current_app;
+        task_manager.tasks[current_app].change_program_brk(size)
+    } 
 }
 
 lazy_static! {
     static ref TASK_MANAGER: TaskManager = {
+        println!("init TASK_MANAGER");
         let num_app = get_num_app();
+        println!("num_app = {}", num_app);
+        let mut tasks: Vec<TaskControlBlock> = Vec::new();
+        for i in 0..num_app {
+            tasks.push(TaskControlBlock::new(get_app_data(i), i));
+        }
         TaskManager {
             num_app: num_app,
-            inner: UPSafeCell::new({
-                let mut tasks = [TaskControlBlock::zero_init(); MAX_APP_NUM];
-                for app_id in 0..num_app {
-                    tasks[app_id].context = app_initial_context(app_id);
-                    tasks[app_id].status = TaskStatus::Ready;
-                }
-                TaskManagerInner {
-                    current_app: 0,
-                    tasks: tasks,
-                }
+            inner: UPSafeCell::new(TaskManagerInner {
+                current_app: 0,
+                tasks: tasks,
             }),
         }
     };
+}
+
+pub fn run_first() {
+    TASK_MANAGER.run_first();
 }
 
 pub fn suspend_current_and_run_next() {
@@ -103,6 +123,14 @@ pub fn exit_current_and_run_next() {
     TASK_MANAGER.run_next();
 }
 
-pub fn run_first() {
-    TASK_MANAGER.run_first();
+pub fn current_user_satp() -> usize {
+    TASK_MANAGER.get_current_satp()
+}
+
+pub fn current_trap_cx() -> &'static mut TrapContext {
+    TASK_MANAGER.get_current_trap_cx()
+}
+
+pub fn change_program_brk(size: i32) -> Option<usize> {
+    TASK_MANAGER.change_current_program_brk(size)
 }

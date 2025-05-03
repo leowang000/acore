@@ -1,0 +1,410 @@
+use super::{
+    FrameTracker, PageTableEntry, PhysAddr, PhysPageNum, VirtAddr, VirtPageNum,
+    address::VPNRange,
+    frame_alloc,
+    page_table::{PageTable, PageTableView},
+};
+use crate::{
+    config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT, USER_STACK_SIZE},
+    println,
+    sync::UPSafeCell,
+};
+use alloc::sync::Arc;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use bitflags::bitflags;
+use core::{arch::asm, cmp::min};
+use lazy_static::lazy_static;
+use riscv::register::satp;
+
+unsafe extern "C" {
+    unsafe fn stext();
+    unsafe fn etext();
+    unsafe fn srodata();
+    unsafe fn erodata();
+    unsafe fn sdata();
+    unsafe fn edata();
+    unsafe fn sbss_with_stack();
+    unsafe fn ebss();
+    unsafe fn ekernel();
+    unsafe fn strampoline();
+}
+
+// For MapType::Identical, the address space does not have ownership of the physical page frames it maps to.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MapType {
+    Identical,
+    Framed,
+}
+
+// the values of R/W/X/U should be identical to those defined in struct PTEFlags
+bitflags! {
+    pub struct Permission: u8 {
+        const R = 1 << 1;
+        const W = 1 << 2;
+        const X = 1 << 3;
+        const U = 1 << 4;
+    }
+}
+
+pub struct MemorySegment {
+    vpn_range: VPNRange,
+    data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    map_type: MapType,
+    permission: Permission,
+}
+
+impl MemorySegment {
+    pub fn new(
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        map_type: MapType,
+        permission: Permission,
+    ) -> Self {
+        Self {
+            vpn_range: VPNRange::new(start_va.floor(), end_va.ceil()),
+            data_frames: BTreeMap::new(),
+            map_type: map_type,
+            permission: permission,
+        }
+    }
+
+    // add the page with VirtPageNum vpn to page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    // the page should belong to self
+    fn map_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+        let ppn: PhysPageNum;
+        match self.map_type {
+            MapType::Identical => {
+                ppn = PhysPageNum(vpn.0);
+            }
+            MapType::Framed => {
+                let frame = frame_alloc().unwrap();
+                ppn = frame.ppn;
+                self.data_frames.insert(vpn, frame);
+            }
+        }
+        page_table.map(vpn, ppn, self.permission);
+    }
+
+    // delete the page with VirtPageNum vpn from page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    // the page should belong to self
+    #[allow(unused)]
+    fn unmap_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+        match self.map_type {
+            MapType::Identical => {}
+            MapType::Framed => {
+                self.data_frames.remove(&vpn);
+            }
+        }
+        page_table.unmap(vpn);
+    }
+
+    // add self to page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    pub fn map(&mut self, page_table: &mut PageTable) {
+        for vpn in self.vpn_range {
+            self.map_page(page_table, vpn);
+        }
+    }
+
+    // delete self from page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    #[allow(unused)]
+    pub fn unmap(&mut self, page_table: &mut PageTable) {
+        for vpn in self.vpn_range {
+            self.unmap_page(page_table, vpn);
+        }
+    }
+
+    // must be called after self is added to page_table
+    pub fn copy_data(&mut self, page_table_view: PageTableView, data: &[u8]) {
+        assert_eq!(self.map_type, MapType::Framed);
+        let mut start: usize = 0;
+        for vpn in self.vpn_range {
+            let src = &data[start..min(data.len(), start + PAGE_SIZE)];
+            let dest = &mut page_table_view
+                .translate(vpn)
+                .unwrap()
+                .ppn()
+                .get_bytes_array()[..src.len()];
+            dest.copy_from_slice(src);
+            start += PAGE_SIZE;
+            if start >= data.len() {
+                break;
+            }
+        }
+    }
+
+    #[allow(unused)]
+    pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end_vpn: VirtPageNum) {
+        for vpn in VPNRange::new(new_end_vpn, self.vpn_range.get_end()) {
+            self.unmap_page(page_table, vpn);
+        }
+        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end_vpn);
+    }
+
+    #[allow(unused)]
+    pub fn append_to(&mut self, page_table: &mut PageTable, new_end_vpn: VirtPageNum) {
+        for vpn in VPNRange::new(self.vpn_range.get_end(), new_end_vpn) {
+            self.map_page(page_table, vpn);
+        }
+        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end_vpn);
+    }
+}
+
+pub struct AddressSpace {
+    page_table: PageTable,
+    segments: Vec<MemorySegment>,
+}
+
+impl AddressSpace {
+    pub fn new_bare() -> Self {
+        Self {
+            page_table: PageTable::new(),
+            segments: Vec::new(),
+        }
+    }
+
+    fn map_trampoline(&mut self) {
+        self.page_table.map(
+            VirtAddr::from(TRAMPOLINE).into(),
+            PhysAddr::from(strampoline as usize).into(),
+            Permission::R | Permission::X,
+        );
+    }
+
+    // returns the kernel address space without the kernel stacks
+    pub fn new_kernel() -> Self {
+        let mut address_space = AddressSpace::new_bare();
+        address_space.map_trampoline();
+        println!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
+        println!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
+        println!(".data [{:#x}, {:#x})", sdata as usize, edata as usize);
+        println!(
+            ".bss [{:#x}, {:#x})",
+            sbss_with_stack as usize, ebss as usize
+        );
+        println!("mapping .text section");
+        address_space.add_segment(
+            MemorySegment::new(
+                (stext as usize).into(),
+                (etext as usize).into(),
+                MapType::Identical,
+                Permission::R | Permission::X,
+            ),
+            None,
+        );
+        println!("mapping .rodata section");
+        address_space.add_segment(
+            MemorySegment::new(
+                (srodata as usize).into(),
+                (erodata as usize).into(),
+                MapType::Identical,
+                Permission::R,
+            ),
+            None,
+        );
+        println!("mapping .data section");
+        address_space.add_segment(
+            MemorySegment::new(
+                (sdata as usize).into(),
+                (edata as usize).into(),
+                MapType::Identical,
+                Permission::R | Permission::W,
+            ),
+            None,
+        );
+        println!("mapping .bss section");
+        address_space.add_segment(
+            MemorySegment::new(
+                (sbss_with_stack as usize).into(),
+                (ebss as usize).into(),
+                MapType::Identical,
+                Permission::R | Permission::W,
+            ),
+            None,
+        );
+        println!("mapping physical memory");
+        address_space.add_segment(
+            MemorySegment::new(
+                (ekernel as usize).into(),
+                MEMORY_END.into(),
+                MapType::Identical,
+                Permission::R | Permission::W,
+            ),
+            None,
+        );
+        address_space
+    }
+
+    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
+        let mut address_space = AddressSpace::new_bare();
+        address_space.map_trampoline();
+        let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
+        let magic = elf.header.pt1.magic;
+        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
+        let ph_count = elf.header.pt2.ph_count();
+        let mut segment_end_vpn = VirtPageNum(0);
+        for i in 0..ph_count {
+            let ph = elf.program_header(i).unwrap();
+            if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
+                let start_va: VirtAddr = (ph.virtual_addr() as usize).into();
+                let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+                let mut permission = Permission::U;
+                let ph_flags = ph.flags();
+                if ph_flags.is_read() {
+                    permission |= Permission::R;
+                }
+                if ph_flags.is_write() {
+                    permission |= Permission::W;
+                }
+                if ph_flags.is_execute() {
+                    permission |= Permission::X;
+                }
+                let segment = MemorySegment::new(start_va, end_va, MapType::Framed, permission);
+                segment_end_vpn = segment.vpn_range.get_end();
+                address_space.add_segment(
+                    segment,
+                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                );
+            }
+        }
+        let segment_end_va: VirtAddr = segment_end_vpn.into();
+        // guard page between segment_end and user_stack
+        let user_stack_bottom = segment_end_va.0 + PAGE_SIZE;
+        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        address_space.add_segment(
+            MemorySegment::new(
+                user_stack_bottom.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                Permission::R | Permission::W | Permission::U,
+            ),
+            None,
+        );
+        // segment reserved for sbrk
+        address_space.add_segment(
+            MemorySegment::new(
+                user_stack_top.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                Permission::R | Permission::W | Permission::U,
+            ),
+            None,
+        );
+        address_space.add_segment(
+            MemorySegment::new(
+                TRAP_CONTEXT.into(),
+                TRAMPOLINE.into(),
+                MapType::Framed,
+                Permission::R | Permission::W,
+            ),
+            None,
+        );
+        // return the va of user_sp and the entry_point of the program
+        (
+            address_space,
+            user_stack_top,
+            elf.header.pt2.entry_point() as usize,
+        )
+    }
+
+    fn add_segment(&mut self, mut segment: MemorySegment, data: Option<&[u8]>) {
+        segment.map(&mut self.page_table);
+        if let Some(data) = data {
+            segment.copy_data(self.page_table.view(), data);
+        }
+        self.segments.push(segment);
+    }
+
+    pub fn add_segment_framed(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: Permission,
+    ) {
+        self.add_segment(
+            MemorySegment::new(start_va, end_va, MapType::Framed, permission),
+            None,
+        );
+    }
+
+    pub fn satp(&self) -> usize {
+        self.page_table.satp()
+    }
+
+    pub fn activate(&self) {
+        unsafe {
+            satp::write(self.satp());
+            asm!("sfence.vma");
+        }
+    }
+
+    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        self.page_table.view().translate(vpn)
+    }
+
+    #[allow(unused)]
+    pub fn shrink_to(&mut self, start_va: VirtAddr, new_end_va: VirtAddr) -> bool {
+        if let Some(segment) = self
+            .segments
+            .iter_mut()
+            .find(|segment| segment.vpn_range.get_start() == start_va.floor())
+        {
+            segment.shrink_to(&mut self.page_table, new_end_va.ceil());
+            true
+        } else {
+            false
+        }
+    }
+
+    #[allow(unused)]
+    pub fn append_to(&mut self, start_va: VirtAddr, new_end_va: VirtAddr) -> bool {
+        if let Some(segment) = self
+            .segments
+            .iter_mut()
+            .find(|segment| segment.vpn_range.get_start() == start_va.floor())
+        {
+            segment.append_to(&mut self.page_table, new_end_va.ceil());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+lazy_static! {
+    pub static ref KERNEL_SPACE: Arc<UPSafeCell<AddressSpace>> =
+        Arc::new(UPSafeCell::new(AddressSpace::new_kernel()));
+}
+
+#[allow(unused)]
+#[unsafe(no_mangle)]
+pub fn remap_test() {
+    let mut kernel_space = KERNEL_SPACE.exclusive_access();
+    let mid_text: VirtAddr = ((stext as usize + etext as usize) / 2).into();
+    let mid_rodata: VirtAddr = ((srodata as usize + erodata as usize) / 2).into();
+    let mid_data: VirtAddr = ((sdata as usize + edata as usize) / 2).into();
+    assert!(
+        !kernel_space
+            .page_table
+            .view()
+            .translate(mid_text.floor())
+            .unwrap()
+            .writable(),
+    );
+    assert!(
+        !kernel_space
+            .page_table
+            .view()
+            .translate(mid_rodata.floor())
+            .unwrap()
+            .writable(),
+    );
+    assert!(
+        !kernel_space
+            .page_table
+            .view()
+            .translate(mid_data.floor())
+            .unwrap()
+            .executable(),
+    );
+    println!("remap_test passed!");
+}
