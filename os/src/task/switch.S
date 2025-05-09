@@ -5,7 +5,7 @@
 .endm
 
 .macro LOAD_SREG id
-    ld s\id, (\id + 2) * 8(a0)
+    ld s\id, (\id + 2) * 8(a1)
 .endm
 
     .section .text

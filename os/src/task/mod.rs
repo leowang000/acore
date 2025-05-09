@@ -1,136 +1,61 @@
-use crate::{
-    loader::{get_app_data, get_num_app},
-    println,
-    sbi::shutdown,
-    sync::UPSafeCell,
-    trap::TrapContext,
-};
-use alloc::vec::Vec;
-use lazy_static::*;
-use switch::__switch;
+use crate::loader::get_app_data_by_name;
+use alloc::sync::Arc;
+use lazy_static::lazy_static;
+use processor::take_current_task;
 use task::*;
 
 mod context;
+mod kernel_stack;
+mod manager;
+mod pid;
+mod processor;
 mod switch;
 mod task;
 
 pub use context::TaskContext;
-
-pub struct TaskManager {
-    num_app: usize,
-    inner: UPSafeCell<TaskManagerInner>,
-}
-
-struct TaskManagerInner {
-    current_app: usize,
-    tasks: Vec<TaskControlBlock>,
-}
-
-impl TaskManager {
-    fn run_first(&self) -> ! {
-        let mut task_manager = self.inner.exclusive_access();
-        let switch_from = &mut TaskContext::zero_init() as *mut TaskContext;
-        let switch_to = &task_manager.tasks[0].context as *const TaskContext;
-        task_manager.current_app = 0;
-        task_manager.tasks[0].status = TaskStatus::Running;
-        drop(task_manager);
-        unsafe {
-            __switch(switch_from, switch_to);
-        }
-        unreachable!();
-    }
-
-    fn suspend_current(&self) {
-        let mut task_manager = self.inner.exclusive_access();
-        let current_app = task_manager.current_app;
-        task_manager.tasks[current_app].status = TaskStatus::Ready;
-    }
-
-    fn exit_current(&self) {
-        let mut task_manager = self.inner.exclusive_access();
-        let current_app = task_manager.current_app;
-        task_manager.tasks[current_app].status = TaskStatus::Exited;
-    }
-
-    fn run_next(&self) {
-        let mut task_manager = self.inner.exclusive_access();
-        let next = (task_manager.current_app + 1..=task_manager.current_app + self.num_app)
-            .map(|id| id % self.num_app)
-            .find(|id| task_manager.tasks[*id].status == TaskStatus::Ready);
-        if let Some(app_id) = next {
-            let current_app = task_manager.current_app;
-            let switch_from = &mut task_manager.tasks[current_app].context as *mut TaskContext;
-            let switch_to = &task_manager.tasks[app_id].context as *const TaskContext;
-            task_manager.current_app = app_id;
-            task_manager.tasks[app_id].status = TaskStatus::Running;
-            drop(task_manager);
-            unsafe {
-                __switch(switch_from, switch_to);
-            }
-        } else {
-            println!("All tasks completed");
-            shutdown(false);
-        }
-    }
-
-    fn get_current_satp(&self) -> usize {
-        let task_manager = self.inner.exclusive_access();
-        task_manager.tasks[task_manager.current_app].satp()
-    }
-
-    fn get_current_trap_cx(&self) -> &'static mut TrapContext {
-        let task_manager = self.inner.exclusive_access();
-        task_manager.tasks[task_manager.current_app].get_trap_cx()
-    }
-
-    fn change_current_program_brk(&self, size: i32) -> Option<usize> {
-        let mut task_manager = self.inner.exclusive_access();
-        let current_app = task_manager.current_app;
-        task_manager.tasks[current_app].change_program_brk(size)
-    } 
-}
+pub use kernel_stack::KernelStack;
+pub use manager::add_task;
+pub use pid::{PidAllocator, PidHandle, pid_alloc};
+pub use processor::{
+    Processor, current_task, current_task_satp, current_task_trap_cx, run_tasks, schedule,
+};
 
 lazy_static! {
-    static ref TASK_MANAGER: TaskManager = {
-        println!("init TASK_MANAGER");
-        let num_app = get_num_app();
-        println!("num_app = {}", num_app);
-        let mut tasks: Vec<TaskControlBlock> = Vec::new();
-        for i in 0..num_app {
-            tasks.push(TaskControlBlock::new(get_app_data(i), i));
-        }
-        TaskManager {
-            num_app: num_app,
-            inner: UPSafeCell::new(TaskManagerInner {
-                current_app: 0,
-                tasks: tasks,
-            }),
-        }
-    };
+    pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new(TaskControlBlock::new(
+        get_app_data_by_name("initproc").unwrap()
+    ));
 }
 
-pub fn run_first() {
-    TASK_MANAGER.run_first();
+pub fn add_initproc() {
+    add_task(INITPROC.clone());
 }
 
 pub fn suspend_current_and_run_next() {
-    TASK_MANAGER.suspend_current();
-    TASK_MANAGER.run_next();
+    let current_task = take_current_task().unwrap();
+    let mut current_task_inner = current_task.inner_exclusive_access();
+    let current_task_cx_ptr = &mut current_task_inner.task_cx as *mut _;
+    current_task_inner.status = TaskStatus::Ready;
+    drop(current_task_inner);
+    add_task(current_task);
+    schedule(current_task_cx_ptr);
 }
 
-pub fn exit_current_and_run_next() {
-    TASK_MANAGER.exit_current();
-    TASK_MANAGER.run_next();
-}
-
-pub fn current_user_satp() -> usize {
-    TASK_MANAGER.get_current_satp()
-}
-
-pub fn current_trap_cx() -> &'static mut TrapContext {
-    TASK_MANAGER.get_current_trap_cx()
-}
-
-pub fn change_program_brk(size: i32) -> Option<usize> {
-    TASK_MANAGER.change_current_program_brk(size)
+pub fn exit_current_and_run_next(exit_code: i32) {
+    let current_task = take_current_task().unwrap();
+    let mut current_task_inner = current_task.inner_exclusive_access();
+    current_task_inner.status = TaskStatus::Zombie;
+    current_task_inner.exit_code = exit_code;
+    for child in current_task_inner.children.iter() {
+        child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
+        INITPROC
+            .inner_exclusive_access()
+            .children
+            .push(child.clone());
+    }
+    current_task_inner.children.clear();
+    current_task_inner.address_space.recycle_data_pages();
+    drop(current_task_inner);
+    drop(current_task);
+    let mut unused_task_cx = TaskContext::zero_init();
+    schedule(&mut unused_task_cx as *mut _);
 }

@@ -1,6 +1,13 @@
+#![allow(unused)]
+
 pub fn console_putchar(c: usize) {
     #[allow(deprecated)]
     sbi_rt::legacy::console_putchar(c);
+}
+
+pub fn console_getchar() -> usize {
+    #[allow(deprecated)]
+    sbi_rt::legacy::console_getchar()
 }
 
 pub fn set_timer(timer: usize) {

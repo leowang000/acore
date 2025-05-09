@@ -7,7 +7,7 @@ mod page_table;
 pub use address::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 pub use address_space::{AddressSpace, KERNEL_SPACE, Permission};
 pub use frame_allocator::{FrameTracker, frame_alloc};
-pub use page_table::{PageTableEntry, translated_byte_buffer};
+pub use page_table::{PageTableEntry, translated_byte_buffer, translated_refmut, traslated_str};
 
 pub fn init() {
     heap_allocator::init_heap();

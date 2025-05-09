@@ -68,6 +68,15 @@ impl MemorySegment {
         }
     }
 
+    pub fn from_other(other: &Self) -> Self {
+        Self {
+            vpn_range: VPNRange::new(other.vpn_range.get_start(), other.vpn_range.get_end()),
+            data_frames: BTreeMap::new(),
+            map_type: other.map_type,
+            permission: other.permission,
+        }
+    }
+
     // add the page with VirtPageNum vpn to page_table (and self.data_frames if self.map_type == Maptype::Framed)
     // the page should belong to self
     fn map_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -87,7 +96,6 @@ impl MemorySegment {
 
     // delete the page with VirtPageNum vpn from page_table (and self.data_frames if self.map_type == Maptype::Framed)
     // the page should belong to self
-    #[allow(unused)]
     fn unmap_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         match self.map_type {
             MapType::Identical => {}
@@ -106,7 +114,6 @@ impl MemorySegment {
     }
 
     // delete self from page_table (and self.data_frames if self.map_type == Maptype::Framed)
-    #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_page(page_table, vpn);
@@ -131,22 +138,6 @@ impl MemorySegment {
             }
         }
     }
-
-    #[allow(unused)]
-    pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end_vpn: VirtPageNum) {
-        for vpn in VPNRange::new(new_end_vpn, self.vpn_range.get_end()) {
-            self.unmap_page(page_table, vpn);
-        }
-        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end_vpn);
-    }
-
-    #[allow(unused)]
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end_vpn: VirtPageNum) {
-        for vpn in VPNRange::new(self.vpn_range.get_end(), new_end_vpn) {
-            self.map_page(page_table, vpn);
-        }
-        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end_vpn);
-    }
 }
 
 pub struct AddressSpace {
@@ -160,6 +151,22 @@ impl AddressSpace {
             page_table: PageTable::new(),
             segments: Vec::new(),
         }
+    }
+
+    pub fn from_existed_user(user_space: &Self) -> Self {
+        let mut address_space = Self::new_bare();
+        address_space.map_trampoline();
+        for segment in user_space.segments.iter() {
+            address_space.add_segment(MemorySegment::from_other(segment), None);
+            for vpn in segment.vpn_range {
+                let src_ppn = user_space.translate(vpn).unwrap().ppn();
+                let dest_ppn = address_space.translate(vpn).unwrap().ppn();
+                dest_ppn
+                    .get_bytes_array()
+                    .copy_from_slice(src_ppn.get_bytes_array());
+            }
+        }
+        address_space
     }
 
     fn map_trampoline(&mut self) {
@@ -234,8 +241,11 @@ impl AddressSpace {
         address_space
     }
 
+    // return (address_space, va of user stack pointer, the entry point of the program)
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
         let mut address_space = AddressSpace::new_bare();
+        // User address space does not have the ownership of the physical frame where the trampoline code resides.
+        // So the trampoline should only be added to the page table.
         address_space.map_trampoline();
         let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
         let magic = elf.header.pt1.magic;
@@ -279,16 +289,6 @@ impl AddressSpace {
             ),
             None,
         );
-        // segment reserved for sbrk
-        address_space.add_segment(
-            MemorySegment::new(
-                user_stack_top.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                Permission::R | Permission::W | Permission::U,
-            ),
-            None,
-        );
         address_space.add_segment(
             MemorySegment::new(
                 TRAP_CONTEXT.into(),
@@ -298,7 +298,6 @@ impl AddressSpace {
             ),
             None,
         );
-        // return the va of user_sp and the entry_point of the program
         (
             address_space,
             user_stack_top,
@@ -326,6 +325,22 @@ impl AddressSpace {
         );
     }
 
+    pub fn remove_segment_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
+        if let Some((id, segment)) = self
+            .segments
+            .iter_mut()
+            .enumerate()
+            .find(|(_, segment)| segment.vpn_range.get_start() == start_vpn)
+        {
+            segment.unmap(&mut self.page_table);
+            self.segments.remove(id);
+        }
+    }
+
+    pub fn recycle_data_pages(&mut self) {
+        self.segments.clear();
+    }
+
     pub fn satp(&self) -> usize {
         self.page_table.satp()
     }
@@ -339,34 +354,6 @@ impl AddressSpace {
 
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.view().translate(vpn)
-    }
-
-    #[allow(unused)]
-    pub fn shrink_to(&mut self, start_va: VirtAddr, new_end_va: VirtAddr) -> bool {
-        if let Some(segment) = self
-            .segments
-            .iter_mut()
-            .find(|segment| segment.vpn_range.get_start() == start_va.floor())
-        {
-            segment.shrink_to(&mut self.page_table, new_end_va.ceil());
-            true
-        } else {
-            false
-        }
-    }
-
-    #[allow(unused)]
-    pub fn append_to(&mut self, start_va: VirtAddr, new_end_va: VirtAddr) -> bool {
-        if let Some(segment) = self
-            .segments
-            .iter_mut()
-            .find(|segment| segment.vpn_range.get_start() == start_va.floor())
-        {
-            segment.append_to(&mut self.page_table, new_end_va.ceil());
-            true
-        } else {
-            false
-        }
     }
 }
 

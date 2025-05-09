@@ -1,9 +1,13 @@
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{string::String, vec};
 use bitflags::bitflags;
 
+use super::PhysAddr;
 use super::{
-    address::{PhysPageNum, StepByOne, VirtPageNum}, address_space::Permission, frame_allocator::{frame_alloc, FrameTracker}, VirtAddr
+    VirtAddr,
+    address::{PhysPageNum, StepByOne, VirtPageNum},
+    address_space::Permission,
+    frame_allocator::{FrameTracker, frame_alloc},
 };
 
 bitflags! {
@@ -160,13 +164,18 @@ impl PageTableView {
         self.find_pte(vpn).map(|pte| pte.clone())
     }
 
+    pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
+        self.find_pte(va.floor())
+            .map(|pte| (usize::from(PhysAddr::from(pte.ppn())) + va.page_offset()).into())
+    }
+
     #[allow(unused)]
     pub fn satp(&self) -> usize {
         0b1000usize << 60 | self.root_ppn.0
     }
 }
 
-pub fn translated_byte_buffer(satp: usize, ptr: *const u8, len: usize) -> Vec<&'static [u8]> {
+pub fn translated_byte_buffer(satp: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table_view = PageTableView::from_satp(satp);
     let mut start = ptr as usize;
     let end = start + len;
@@ -179,11 +188,32 @@ pub fn translated_byte_buffer(satp: usize, ptr: *const u8, len: usize) -> Vec<&'
         let mut end_va: VirtAddr = vpn.into();
         end_va = core::cmp::min(end_va, end.into());
         if end_va.page_offset() == 0 {
-            v.push(&ppn.get_bytes_array()[start_va.page_offset()..]);
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
-            v.push(&ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
         }
         start = end_va.into();
     }
     v
+}
+
+pub fn traslated_str(satp: usize, ptr: *const u8) -> String {
+    let page_table_view = PageTableView::from_satp(satp);
+    let mut string = String::new();
+    let mut va = ptr as usize;
+    loop {
+        let ch: u8 = *page_table_view.translate_va(va.into()).unwrap().get_mut();
+        if ch == b'\0' {
+            return string;
+        } else {
+            string.push(ch as char);
+            va += 1;
+        }
+    }
+}
+
+pub fn translated_refmut<T>(satp: usize, ptr: *mut T) -> &'static mut T {
+    let page_table_view = PageTableView::from_satp(satp);
+    let va = ptr as usize;
+    page_table_view.translate_va(va.into()).unwrap().get_mut()
 }
