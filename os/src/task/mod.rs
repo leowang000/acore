@@ -1,4 +1,4 @@
-use crate::loader::get_app_data_by_name;
+use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
 use lazy_static::lazy_static;
 use processor::take_current_task;
@@ -15,15 +15,17 @@ mod task;
 pub use context::TaskContext;
 pub use kernel_stack::KernelStack;
 pub use manager::add_task;
-pub use pid::{PidAllocator, PidHandle, pid_alloc};
+pub use pid::{pid_alloc, PidAllocator, PidHandle};
 pub use processor::{
-    Processor, current_task, current_task_satp, current_task_trap_cx, run_tasks, schedule,
+    current_task, current_task_satp, current_task_trap_cx, run_tasks, schedule, Processor,
 };
 
 lazy_static! {
-    pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new(TaskControlBlock::new(
-        get_app_data_by_name("initproc").unwrap()
-    ));
+    pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new({
+        let inode = open_file("initproc", OpenFlags::RDONLY).unwrap();
+        let v = inode.read_all();
+        TaskControlBlock::new(v.as_slice())
+    });
 }
 
 pub fn add_initproc() {

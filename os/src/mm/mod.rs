@@ -4,10 +4,13 @@ mod frame_allocator;
 mod heap_allocator;
 mod page_table;
 
-pub use address::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
-pub use address_space::{AddressSpace, KERNEL_SPACE, Permission};
-pub use frame_allocator::{FrameTracker, frame_alloc};
-pub use page_table::{PageTableEntry, translated_byte_buffer, translated_refmut, traslated_str};
+pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+pub use address_space::{kernel_satp, AddressSpace, Permission, KERNEL_SPACE};
+pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
+pub use page_table::{
+    translated_byte_buffer, translated_refmut, translated_str, PageTable, PageTableEntry,
+    PageTableView, UserBuffer, UserBufferIterator,
+};
 
 pub fn init() {
     heap_allocator::init_heap();

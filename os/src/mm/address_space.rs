@@ -1,10 +1,11 @@
 use super::{
-    FrameTracker, PageTableEntry, PhysAddr, PhysPageNum, VirtAddr, VirtPageNum,
     address::VPNRange,
     frame_alloc,
     page_table::{PageTable, PageTableView},
+    FrameTracker, PageTableEntry, PhysAddr, PhysPageNum, VirtAddr, VirtPageNum,
 };
 use crate::{
+    board::MMIO,
     config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT, USER_STACK_SIZE},
     println,
     sync::UPSafeCell,
@@ -29,15 +30,15 @@ unsafe extern "C" {
     unsafe fn strampoline();
 }
 
-// For MapType::Identical, the address space does not have ownership of the physical page frames it maps to.
+/// For MapType::Identical, the address space does not have ownership of the physical page frames it maps to.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MapType {
     Identical,
     Framed,
 }
 
-// the values of R/W/X/U should be identical to those defined in struct PTEFlags
 bitflags! {
+    /// The values of R/W/X/U should be identical to those defined in struct PTEFlags.
     pub struct Permission: u8 {
         const R = 1 << 1;
         const W = 1 << 2;
@@ -77,8 +78,8 @@ impl MemorySegment {
         }
     }
 
-    // add the page with VirtPageNum vpn to page_table (and self.data_frames if self.map_type == Maptype::Framed)
-    // the page should belong to self
+    /// Add the page with VirtPageNum vpn to page_table (and self.data_frames if self.map_type == Maptype::Framed).
+    /// The page should belong to self.
     fn map_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
@@ -94,8 +95,8 @@ impl MemorySegment {
         page_table.map(vpn, ppn, self.permission);
     }
 
-    // delete the page with VirtPageNum vpn from page_table (and self.data_frames if self.map_type == Maptype::Framed)
-    // the page should belong to self
+    /// Delete the page with VirtPageNum vpn from page_table (and self.data_frames if self.map_type == Maptype::Framed).
+    /// The page should belong to self.
     fn unmap_page(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         match self.map_type {
             MapType::Identical => {}
@@ -106,21 +107,21 @@ impl MemorySegment {
         page_table.unmap(vpn);
     }
 
-    // add self to page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    /// Add self to page_table (and self.data_frames if self.map_type == Maptype::Framed).
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_page(page_table, vpn);
         }
     }
 
-    // delete self from page_table (and self.data_frames if self.map_type == Maptype::Framed)
+    /// Delete self from page_table (and self.data_frames if self.map_type == Maptype::Framed).
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_page(page_table, vpn);
         }
     }
 
-    // must be called after self is added to page_table
+    /// Must be called after self is added to page_table.
     pub fn copy_data(&mut self, page_table_view: PageTableView, data: &[u8]) {
         assert_eq!(self.map_type, MapType::Framed);
         let mut start: usize = 0;
@@ -177,7 +178,7 @@ impl AddressSpace {
         );
     }
 
-    // returns the kernel address space without the kernel stacks
+    /// Return the kernel address space without the kernel stacks.
     pub fn new_kernel() -> Self {
         let mut address_space = AddressSpace::new_bare();
         address_space.map_trampoline();
@@ -238,6 +239,18 @@ impl AddressSpace {
             ),
             None,
         );
+        println!("mapping memory-mapped registers");
+        for pair in MMIO {
+            address_space.add_segment(
+                MemorySegment::new(
+                    (*pair).0.into(),
+                    ((*pair).0 + (*pair).1).into(),
+                    MapType::Identical,
+                    Permission::R | Permission::W,
+                ),
+                None,
+            );
+        }
         address_space
     }
 
@@ -362,6 +375,10 @@ lazy_static! {
         Arc::new(UPSafeCell::new(AddressSpace::new_kernel()));
 }
 
+pub fn kernel_satp() -> usize {
+    KERNEL_SPACE.exclusive_access().satp()
+}
+
 #[allow(unused)]
 #[unsafe(no_mangle)]
 pub fn remap_test() {
@@ -369,29 +386,23 @@ pub fn remap_test() {
     let mid_text: VirtAddr = ((stext as usize + etext as usize) / 2).into();
     let mid_rodata: VirtAddr = ((srodata as usize + erodata as usize) / 2).into();
     let mid_data: VirtAddr = ((sdata as usize + edata as usize) / 2).into();
-    assert!(
-        !kernel_space
-            .page_table
-            .view()
-            .translate(mid_text.floor())
-            .unwrap()
-            .writable(),
-    );
-    assert!(
-        !kernel_space
-            .page_table
-            .view()
-            .translate(mid_rodata.floor())
-            .unwrap()
-            .writable(),
-    );
-    assert!(
-        !kernel_space
-            .page_table
-            .view()
-            .translate(mid_data.floor())
-            .unwrap()
-            .executable(),
-    );
+    assert!(!kernel_space
+        .page_table
+        .view()
+        .translate(mid_text.floor())
+        .unwrap()
+        .writable(),);
+    assert!(!kernel_space
+        .page_table
+        .view()
+        .translate(mid_rodata.floor())
+        .unwrap()
+        .writable(),);
+    assert!(!kernel_space
+        .page_table
+        .view()
+        .translate(mid_data.floor())
+        .unwrap()
+        .executable(),);
     println!("remap_test passed!");
 }

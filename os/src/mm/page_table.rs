@@ -197,7 +197,7 @@ pub fn translated_byte_buffer(satp: usize, ptr: *const u8, len: usize) -> Vec<&'
     v
 }
 
-pub fn traslated_str(satp: usize, ptr: *const u8) -> String {
+pub fn translated_str(satp: usize, ptr: *const u8) -> String {
     let page_table_view = PageTableView::from_satp(satp);
     let mut string = String::new();
     let mut va = ptr as usize;
@@ -212,8 +212,74 @@ pub fn traslated_str(satp: usize, ptr: *const u8) -> String {
     }
 }
 
+#[allow(unused)]
+pub fn translated_ref<T>(satp: usize, ptr: *mut T) -> &'static T {
+    PageTableView::from_satp(satp)
+        .translate_va((ptr as usize).into())
+        .unwrap()
+        .get_ref()
+}
+
 pub fn translated_refmut<T>(satp: usize, ptr: *mut T) -> &'static mut T {
-    let page_table_view = PageTableView::from_satp(satp);
-    let va = ptr as usize;
-    page_table_view.translate_va(va.into()).unwrap().get_mut()
+    PageTableView::from_satp(satp)
+        .translate_va((ptr as usize).into())
+        .unwrap()
+        .get_mut()
+}
+
+/// Abstract the result of translated_byte_buffer as &[u8].
+pub struct UserBuffer {
+    pub buffers: Vec<&'static mut [u8]>,
+}
+
+impl UserBuffer {
+    pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
+        Self { buffers: buffers }
+    }
+
+    pub fn len(&self) -> usize {
+        let mut length: usize = 0;
+        for b in self.buffers.iter() {
+            length += b.len();
+        }
+        length
+    }
+}
+
+impl<'a> IntoIterator for &'a mut UserBuffer {
+    type Item = *mut u8;
+    type IntoIter = UserBufferIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            user_buffer: self,
+            buffer_id: 0,
+            offset: 0,
+        }
+    }
+}
+
+pub struct UserBufferIterator<'a> {
+    user_buffer: &'a mut UserBuffer,
+    buffer_id: usize,
+    offset: usize,
+}
+
+impl<'a> Iterator for UserBufferIterator<'a> {
+    type Item = *mut u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer_id >= self.user_buffer.buffers.len() {
+            None
+        } else {
+            let cur = &mut self.user_buffer.buffers[self.buffer_id][self.offset] as *mut _;
+            if self.offset + 1 == self.user_buffer.buffers[self.buffer_id].len() {
+                self.buffer_id += 1;
+                self.offset = 0;
+            } else {
+                self.offset += 1;
+            }
+            Some(cur)
+        }
+    }
 }

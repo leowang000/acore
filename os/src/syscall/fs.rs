@@ -1,51 +1,64 @@
 use crate::{
-    mm::translated_byte_buffer,
-    print,
-    sbi::console_getchar,
-    task::{current_task_satp, suspend_current_and_run_next},
+    fs::{open_file, OpenFlags},
+    mm::{translated_byte_buffer, translated_str, UserBuffer},
+    task::{current_task, current_task_satp},
 };
 
-const FD_STDIN: usize = 0;
-const FD_STDOUT: usize = 1;
+pub fn sys_open(path: *const u8, flags: u32) -> isize {
+    let task = current_task().unwrap();
+    let satp = current_task_satp();
+    let path = translated_str(satp, path);
+    if let Some(inode) = open_file(&path, OpenFlags::from_bits(flags).unwrap()) {
+        let mut inner = task.inner_exclusive_access();
+        let fd = inner.alloc_fd();
+        inner.fd_table[fd] = Some(inode);
+        fd as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_close(fd: usize) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if inner.fd_table[fd].is_none() {
+        return -1;
+    }
+    inner.fd_table[fd].take();
+    0
+}
 
 pub fn sys_write(fd: usize, buffer: *const u8, len: usize) -> isize {
-    match fd {
-        FD_STDOUT => {
-            let buffers = translated_byte_buffer(current_task_satp(), buffer, len);
-            for str in buffers {
-                print!("{}", core::str::from_utf8(str).unwrap());
-            }
-            len as isize
-        }
-        _ => {
-            panic!("Unsupported fd in sys_write!");
-        }
+    let satp = current_task_satp();
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        let file = file.clone();
+        drop(inner);
+        file.write(UserBuffer::new(translated_byte_buffer(satp, buffer, len))) as isize
+    } else {
+        -1
     }
 }
 
 pub fn sys_read(fd: usize, buffer: *const u8, len: usize) -> isize {
-    match fd {
-        FD_STDIN => {
-            assert_eq!(len, 1, "Only support len = 1 in sys_read");
-            let mut c: usize;
-            loop {
-                c = console_getchar();
-                match c {
-                    0 => {
-                        suspend_current_and_run_next();
-                        continue;
-                    }
-                    _ => {
-                        break;
-                    }
-                }
-            }
-            let mut buffers = translated_byte_buffer(current_task_satp(), buffer, len);
-            unsafe { buffers[0].as_mut_ptr().write_volatile(c as u8) };
-            1
-        }
-        _ => {
-            panic!("Unsupported fd in sys_read!");
-        }
+    let satp = current_task_satp();
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        let file = file.clone();
+        drop(inner);
+        file.read(UserBuffer::new(translated_byte_buffer(satp, buffer, len))) as isize
+    } else {
+        -1
     }
 }

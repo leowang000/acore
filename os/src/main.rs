@@ -6,24 +6,23 @@ extern crate alloc;
 
 use core::arch::global_asm;
 
+pub mod fs;
+pub mod lang_items;
+pub mod mm;
+pub mod sbi;
+pub mod sync;
 pub mod syscall;
 pub mod task;
+pub mod timer;
 pub mod trap;
 
 #[path = "boards/qemu.rs"]
 mod board;
-
 mod config;
 mod console;
-mod lang_items;
-mod loader;
-mod mm;
-mod sbi;
-mod sync;
-mod timer;
+mod drivers;
 
 global_asm!(include_str!("entry.asm"));
-global_asm!(include_str!("link_app.S"));
 
 fn clear_bss() {
     unsafe extern "C" {
@@ -39,11 +38,11 @@ pub fn rust_main() -> ! {
     println!("[kernel] Hello, world!");
     mm::init();
     mm::test();
-    task::add_initproc();
     trap::init();
     trap::enable_timer_interrupt();
     timer::set_next_trigger();
-    loader::list_apps();
+    fs::list_apps();
+    task::add_initproc();
     task::run_tasks();
     unreachable!();
 }
