@@ -1,8 +1,10 @@
 use crate::{
-    board::MMIO, mm::{
+    board::MMIO,
+    mm::{
         frame_alloc, frame_dealloc, kernel_satp, FrameTracker, PageTableView, PhysAddr,
         PhysPageNum, StepByOne,
-    }, sync::UPSafeCell
+    },
+    sync::UPSafeCell,
 };
 use alloc::vec::Vec;
 use easy_fs::BlockDevice;
@@ -33,6 +35,7 @@ impl Hal for VirtioHal {
         let mut ppn_base: PhysPageNum = PhysAddr::from(paddr).into();
         for _ in 0..pages {
             frame_dealloc(ppn_base);
+            QUEUE_FRAMES.exclusive_access().pop();
             ppn_base.step();
         }
         0
