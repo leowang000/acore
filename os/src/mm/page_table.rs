@@ -4,10 +4,10 @@ use bitflags::bitflags;
 
 use super::PhysAddr;
 use super::{
-    VirtAddr,
     address::{PhysPageNum, StepByOne, VirtPageNum},
     address_space::Permission,
-    frame_allocator::{FrameTracker, frame_alloc},
+    frame_allocator::{frame_alloc, FrameTracker},
+    VirtAddr,
 };
 
 bitflags! {
@@ -212,8 +212,7 @@ pub fn translated_str(satp: usize, ptr: *const u8) -> String {
     }
 }
 
-#[allow(unused)]
-pub fn translated_ref<T>(satp: usize, ptr: *mut T) -> &'static T {
+pub fn translated_ref<T>(satp: usize, ptr: *const T) -> &'static T {
     PageTableView::from_satp(satp)
         .translate_va((ptr as usize).into())
         .unwrap()
@@ -246,34 +245,34 @@ impl UserBuffer {
     }
 }
 
-impl<'a> IntoIterator for &'a mut UserBuffer {
+impl IntoIterator for UserBuffer {
     type Item = *mut u8;
-    type IntoIter = UserBufferIterator<'a>;
+    type IntoIter = UserBufferIterator;
 
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter {
-            user_buffer: self,
+            buffers: self.buffers,
             buffer_id: 0,
             offset: 0,
         }
     }
 }
 
-pub struct UserBufferIterator<'a> {
-    user_buffer: &'a mut UserBuffer,
+pub struct UserBufferIterator {
+    buffers: Vec<&'static mut [u8]>,
     buffer_id: usize,
     offset: usize,
 }
 
-impl<'a> Iterator for UserBufferIterator<'a> {
+impl Iterator for UserBufferIterator {
     type Item = *mut u8;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.buffer_id >= self.user_buffer.buffers.len() {
+        if self.buffer_id >= self.buffers.len() {
             None
         } else {
-            let cur = &mut self.user_buffer.buffers[self.buffer_id][self.offset] as *mut _;
-            if self.offset + 1 == self.user_buffer.buffers[self.buffer_id].len() {
+            let cur = &mut self.buffers[self.buffer_id][self.offset] as *mut _;
+            if self.offset + 1 == self.buffers[self.buffer_id].len() {
                 self.buffer_id += 1;
                 self.offset = 0;
             } else {

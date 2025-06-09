@@ -6,7 +6,7 @@ extern crate user_lib;
 
 use user_lib::{close, open, read, write, OpenFlags};
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub fn main() -> i32 {
     let test_str = "Hello, world!";
     let filea = "filea\0";

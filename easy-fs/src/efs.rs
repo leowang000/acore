@@ -1,6 +1,6 @@
 use crate::{
     bitmap::Bitmap,
-    block_cache::get_block_cache,
+    block_cache::{block_cache_sync_all, get_block_cache},
     block_dev::BlockDevice,
     layout::{DiskInode, DiskInodeType, SuperBlock},
     vfs::Inode,
@@ -35,15 +35,16 @@ impl EasyFileSystem {
         let data_area_blocks = data_total_blocks - data_bitmap_blocks;
         let data_bitmap = Bitmap::new(1 + inode_total_blocks, data_bitmap_blocks);
         for i in 0..total_blocks {
-            get_block_cache(i as usize, block_device)
-                .lock()
-                .modify(0, |data_block: &mut DataBlock| {
+            get_block_cache(i as usize, block_device).lock().modify(
+                0,
+                |data_block: &mut DataBlock| {
                     data_block.as_mut_slice().fill(0);
-                })
+                },
+            )
         }
-        get_block_cache(0, block_device).lock().modify(
-            0,
-            |super_block: &mut SuperBlock| {
+        get_block_cache(0, block_device)
+            .lock()
+            .modify(0, |super_block: &mut SuperBlock| {
                 super_block.initialize(
                     total_blocks,
                     inode_bitmap_blocks,
@@ -51,8 +52,7 @@ impl EasyFileSystem {
                     data_bitmap_blocks as u32,
                     data_area_blocks as u32,
                 );
-            },
-        );
+            });
         let mut efs = Self {
             block_device: block_device.clone(),
             inode_bitmap: inode_bitmap,
@@ -67,6 +67,7 @@ impl EasyFileSystem {
             .modify(root_inode_block_offset, |disk_inode: &mut DiskInode| {
                 disk_inode.initialize(DiskInodeType::Directory);
             });
+        block_cache_sync_all();
         Arc::new(Mutex::new(efs))
     }
 

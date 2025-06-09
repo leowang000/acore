@@ -108,18 +108,19 @@ fn easy_fs_pack() -> std::io::Result<()> {
     let src_path = matches.value_of("source").unwrap();
     let target_path = matches.value_of("target").unwrap();
     println!("src_path = {}\ntarget_path = {}", src_path, target_path);
-    // 4MB block file
+    // 16MB block file
+    let block_file_size: usize = 16 << 20;
     let block_file: Arc<dyn BlockDevice> = Arc::new(BlockFile(Mutex::new({
         let f = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(format!("{}{}", target_path, "fs.img"))?;
-        f.set_len(8192 * 512).unwrap();
+        f.set_len(block_file_size as u64).unwrap();
         f
     })));
     // at most 4096 Inodes (i.e. at most 4095 files)
-    let efs = EasyFileSystem::create(&block_file, 8192, 1);
+    let efs = EasyFileSystem::create(&block_file, (block_file_size / BLOCK_SZ) as u32, 1);
     let root_inode = Arc::new(EasyFileSystem::root_inode(&efs));
     let apps: Vec<String> = read_dir(src_path)
         .unwrap()

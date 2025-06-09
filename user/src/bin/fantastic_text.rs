@@ -10,7 +10,7 @@ macro_rules! color_text {
     }};
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub fn main() -> i32 {
     println!(
         "{}{}{}{}{} {}{}{}{} {}{}{}{}{}{}",

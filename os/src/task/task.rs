@@ -6,11 +6,13 @@ use super::{
 use crate::{
     config::TRAP_CONTEXT,
     fs::{File, Stdin, Stdout},
-    mm::{AddressSpace, PhysPageNum, VirtAddr, KERNEL_SPACE},
+    mm::{translated_refmut, AddressSpace, PhysPageNum, VirtAddr, KERNEL_SPACE},
     sync::UPSafeCell,
+    task::{SignalActionTable, SignalFlags},
     trap::{trap_handler, TrapContext},
 };
 use alloc::{
+    string::String,
     sync::{Arc, Weak},
     vec,
     vec::Vec,
@@ -37,6 +39,14 @@ pub struct TaskControlBlockInner {
     pub children: Vec<Arc<TaskControlBlock>>,
     pub exit_code: i32,
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+    pub signal_mask: SignalFlags,
+    pub signal_actions: SignalActionTable,
+    /// signals that haven't been handled
+    pub signals: SignalFlags,
+    pub handling_signal: isize,
+    pub killed: bool,
+    pub frozen: bool,
+    pub trap_ctx_backup: Option<TrapContext>,
 }
 
 impl TaskControlBlockInner {
@@ -112,24 +122,61 @@ impl TaskControlBlock {
                     Some(Arc::new(Stdout)),
                     Some(Arc::new(Stdout)),
                 ],
+                signal_mask: SignalFlags::empty(),
+                signal_actions: SignalActionTable::default(),
+                signals: SignalFlags::empty(),
+                handling_signal: -1,
+                killed: false,
+                frozen: false,
+                trap_ctx_backup: None,
             }),
         }
     }
 
-    // The physical frame where the trap context is stored will change during exec.
-    pub fn exec(&self, elf_data: &[u8]) {
-        let (address_space, user_sp, entry_point) = AddressSpace::from_elf(elf_data);
+    /// The physical frame where the trap context is stored will change during exec.
+    pub fn exec(&self, elf_data: &[u8], args: Vec<String>) {
+        let (address_space, mut user_sp, entry_point) = AddressSpace::from_elf(elf_data);
         let trap_cx_ppn = address_space
             .translate(VirtAddr::from(TRAP_CONTEXT).into())
             .unwrap()
             .ppn();
-        *trap_cx_ppn.get_mut() = TrapContext::app_initial_context(
+        // Push arguments on user stack.
+        user_sp -= (args.len() + 1) * core::mem::size_of::<usize>();
+        let argv_base = user_sp;
+        let mut argv: Vec<&'static mut usize> = (0..=args.len())
+            .map(|arg| {
+                translated_refmut(
+                    address_space.satp(),
+                    (argv_base + arg * core::mem::size_of::<usize>()) as *mut usize,
+                )
+            })
+            .collect();
+        // Write nullptr at the end of argv.
+        *argv[args.len()] = 0;
+        for i in 0..args.len() {
+            user_sp -= args[i].len() + 1;
+            *argv[i] = user_sp;
+            let mut p = user_sp;
+            for c in args[i].as_bytes() {
+                *translated_refmut(address_space.satp(), p as *mut u8) = *c;
+                p += 1;
+            }
+            // Write '\0' at the end of each arg.
+            *translated_refmut(address_space.satp(), p as *mut u8) = 0;
+        }
+        // Make the user_sp aligned to 8B.
+        user_sp -= user_sp % core::mem::size_of::<usize>();
+        // Initialize trap_cx.
+        let mut trap_cx = TrapContext::app_initial_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.exclusive_access().satp(),
             self.kernel_stack.get_top(),
             trap_handler as usize,
         );
+        trap_cx.gprs[10] = args.len();
+        trap_cx.gprs[11] = argv_base;
+        *trap_cx_ppn.get_mut() = trap_cx;
         let mut inner = self.inner.exclusive_access();
         inner.address_space = address_space;
         inner.trap_cx_ppn = trap_cx_ppn;
@@ -162,6 +209,13 @@ impl TaskControlBlock {
                 children: Vec::new(),
                 exit_code: 0,
                 fd_table: new_fd_table,
+                signal_mask: parent_inner.signal_mask,
+                signal_actions: parent_inner.signal_actions.clone(),
+                signals: SignalFlags::empty(),
+                handling_signal: -1,
+                killed: false,
+                frozen: false,
+                trap_ctx_backup: None,
             }),
         });
         parent_inner.children.push(task_control_block.clone());

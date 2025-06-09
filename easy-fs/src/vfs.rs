@@ -1,5 +1,5 @@
 use crate::{
-    block_cache::get_block_cache,
+    block_cache::{block_cache_sync_all, get_block_cache},
     block_dev::BlockDevice,
     efs::EasyFileSystem,
     layout::{DirEntry, DiskInode, DiskInodeType, DIRENTRY_SZ},
@@ -145,6 +145,7 @@ impl Inode {
                 &self.block_device,
             );
         });
+        block_cache_sync_all();
         Some(Arc::new(Self::new(
             new_inode_disk_id,
             new_inode_block_offset,
@@ -163,6 +164,7 @@ impl Inode {
                 fs.dealloc_data(data_block);
             }
         });
+        block_cache_sync_all();
     }
 
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
@@ -172,7 +174,7 @@ impl Inode {
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> usize {
         let mut fs = self.fs.lock();
-        self.modify_disk_inode(|disk_inode| {
+        let size = self.modify_disk_inode(|disk_inode| {
             Self::increase_size(
                 (offset + buf.len()) as u32,
                 disk_inode,
@@ -180,6 +182,8 @@ impl Inode {
                 &self.block_device,
             );
             disk_inode.write_at(offset, buf, &self.block_device)
-        })
+        });
+        block_cache_sync_all();
+        size
     }
 }

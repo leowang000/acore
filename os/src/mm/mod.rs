@@ -8,8 +8,8 @@ pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 pub use address_space::{kernel_satp, AddressSpace, Permission, KERNEL_SPACE};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
 pub use page_table::{
-    translated_byte_buffer, translated_refmut, translated_str, PageTable, PageTableEntry,
-    PageTableView, UserBuffer, UserBufferIterator,
+    translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
+    PageTableEntry, PageTableView, UserBuffer, UserBufferIterator,
 };
 
 pub fn init() {

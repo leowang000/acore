@@ -3,8 +3,7 @@ use crate::{
     println,
     syscall::syscall,
     task::{
-        current_task_satp, current_task_trap_cx, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        check_signals_error_of_current, current_add_signal, current_task_satp, current_task_trap_cx, exit_current_and_run_next, handle_signals, suspend_current_and_run_next, SignalFlags
     },
     timer::set_next_trigger,
 };
@@ -54,10 +53,10 @@ pub fn trap_handler() -> ! {
     let stval = stval::read();
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
-            let cx= current_task_trap_cx();
+            let cx = current_task_trap_cx();
             cx.sepc += 4;
             let result = syscall(cx.gprs[17], [cx.gprs[10], cx.gprs[11], cx.gprs[12]]) as usize;
-            // cx is changed during sys_exec, so we cannot use cx any more
+            // trap_cx is changed during sys_exec, so we cannot use cx any more
             current_task_trap_cx().gprs[10] = result;
         }
         Trap::Exception(Exception::StoreFault)
@@ -66,16 +65,10 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::LoadPageFault)
         | Trap::Exception(Exception::InstructionFault)
         | Trap::Exception(Exception::InstructionPageFault) => {
-            println!(
-                "[kernel] PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                stval,
-                current_task_trap_cx().sepc
-            );
-            exit_current_and_run_next(-2);
+            current_add_signal(SignalFlags::SIGSEGV);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
-            println!("[kernel] IllegalInstruction in application, kernel killed it");
-            exit_current_and_run_next(-3);
+            current_add_signal(SignalFlags::SIGILL);
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
@@ -88,6 +81,11 @@ pub fn trap_handler() -> ! {
                 stval
             );
         }
+    }
+    handle_signals();
+    if let Some((errno, msg)) = check_signals_error_of_current() {
+        println!("[kernel] {}", msg);
+        exit_current_and_run_next(errno);
     }
     trap_return();
 }

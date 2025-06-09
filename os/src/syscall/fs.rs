@@ -1,8 +1,19 @@
 use crate::{
-    fs::{open_file, OpenFlags},
-    mm::{translated_byte_buffer, translated_str, UserBuffer},
+    fs::{make_pipe, open_file, OpenFlags},
+    mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer},
     task::{current_task, current_task_satp},
 };
+
+pub fn sys_dup(fd: usize) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() || inner.fd_table[fd].is_none() {
+        return -1;
+    }
+    let new_fd = inner.alloc_fd();
+    inner.fd_table[new_fd] = Some(inner.fd_table[fd].as_ref().unwrap().clone());
+    new_fd as isize
+}
 
 pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let task = current_task().unwrap();
@@ -21,13 +32,24 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 pub fn sys_close(fd: usize) -> isize {
     let task = current_task().unwrap();
     let mut inner = task.inner_exclusive_access();
-    if fd >= inner.fd_table.len() {
-        return -1;
-    }
-    if inner.fd_table[fd].is_none() {
+    if fd >= inner.fd_table.len() || inner.fd_table[fd].is_none() {
         return -1;
     }
     inner.fd_table[fd].take();
+    0
+}
+
+pub fn sys_pipe(pipe: *mut usize) -> isize {
+    let task = current_task().unwrap();
+    let satp = current_task_satp();
+    let mut inner = task.inner_exclusive_access();
+    let (pipe_read, pip_write) = make_pipe();
+    let read_fd = inner.alloc_fd();
+    inner.fd_table[read_fd] = Some(pipe_read);
+    let write_fd = inner.alloc_fd();
+    inner.fd_table[write_fd] = Some(pip_write);
+    *translated_refmut(satp, pipe) = read_fd;
+    *translated_refmut(satp, unsafe { pipe.add(1) }) = write_fd;
     0
 }
 

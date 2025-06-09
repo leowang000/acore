@@ -35,7 +35,6 @@ impl Hal for VirtioHal {
         let mut ppn_base: PhysPageNum = PhysAddr::from(paddr).into();
         for _ in 0..pages {
             frame_dealloc(ppn_base);
-            QUEUE_FRAMES.exclusive_access().pop();
             ppn_base.step();
         }
         0

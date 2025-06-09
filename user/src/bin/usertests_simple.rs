@@ -20,13 +20,13 @@ static TESTS: &[&str] = &[
 
 use user_lib::{exec, fork, waitpid};
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub fn main() -> i32 {
     for test in TESTS {
         println!("Usertests: Running {}", test);
         let pid = fork();
         if pid == 0 {
-            exec(*test);
+            exec(*test, &[core::ptr::null::<u8>()]);
             panic!("unreachable!");
         } else {
             let mut exit_code: i32 = Default::default();
