@@ -1,4 +1,4 @@
-use crate::task::signal::{SignalFlags, MAX_SIG};
+use crate::task::signal::{SignalFlags, SIG_CNT};
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
@@ -18,13 +18,13 @@ impl Default for SignalAction {
 
 #[derive(Clone)]
 pub struct SignalActionTable {
-    pub table: [SignalAction; MAX_SIG + 1],
+    pub table: [SignalAction; SIG_CNT],
 }
 
 impl Default for SignalActionTable {
     fn default() -> Self {
         Self {
-            table: [SignalAction::default(); MAX_SIG + 1],
+            table: [SignalAction::default(); SIG_CNT],
         }
     }
 }

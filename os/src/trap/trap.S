@@ -54,6 +54,11 @@ __restore:
     csrw sscratch, a0
     mv sp, a0
     # now sp->TRAP_CONTEXT, sscratch->TRAP_CONTEXT
+    # restore CSR sstatus and sepc
+    ld t0, 32 * 8(sp)
+    csrw sstatus, t0
+    ld t0, 33 * 8(sp)
+    csrw sepc, t0
     # restore GPRs, except x0, sp(x2) and tp(x4)
     LOAD_GPR 1
     LOAD_GPR 3
@@ -62,11 +67,6 @@ __restore:
         LOAD_GPR %n
         .set n, n + 1
     .endr
-    # restore CSR sstatus and sepc
-    ld t0, 32 * 8(sp)
-    csrw sstatus, t0
-    ld t0, 33 * 8(sp)
-    csrw sepc, t0
     # back to user stack
     ld sp, 2 * 8(sp)
     sret

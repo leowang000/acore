@@ -1,10 +1,15 @@
-use super::{
-    TaskContext,
-    manager::fetch_task,
-    switch::__switch,
-    task::{TaskControlBlock, TaskStatus},
+//! the state of the processor
+use crate::{
+    sbi::shutdown,
+    sync::UPSafeCell,
+    task::{
+        process::ProcessControlBlock,
+        scheduler::{switch::__switch, task_manager::fetch_task},
+        thread::TaskStatus,
+        TaskContext, TaskControlBlock,
+    },
+    trap::TrapContext,
 };
-use crate::{sbi::shutdown, sync::UPSafeCell, trap::TrapContext};
 use alloc::sync::Arc;
 use lazy_static::lazy_static;
 
@@ -42,19 +47,33 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     PROCESSOR.exclusive_access().take_current()
 }
 
-pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    PROCESSOR.exclusive_access().current()
+pub fn current_task() -> Arc<TaskControlBlock> {
+    PROCESSOR.exclusive_access().current().unwrap()
+}
+
+pub fn current_process() -> Arc<ProcessControlBlock> {
+    current_task().process.upgrade().unwrap()
 }
 
 pub fn current_task_satp() -> usize {
-    current_task().unwrap().inner_exclusive_access().satp()
+    current_task().satp()
 }
 
 pub fn current_task_trap_cx() -> &'static mut TrapContext {
+    current_task().inner_exclusive_access().get_trap_cx()
+}
+
+pub fn current_task_trap_cx_user_va() -> usize {
     current_task()
-        .unwrap()
         .inner_exclusive_access()
-        .get_trap_cx()
+        .user_resource
+        .as_ref()
+        .unwrap()
+        .trap_cx_bottom_va()
+}
+
+pub fn current_kernel_stack_top() -> usize {
+    current_task().kernel_stack.get_top()
 }
 
 pub fn run_tasks() {

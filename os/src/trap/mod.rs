@@ -1,16 +1,18 @@
 use crate::{
-    config::{TRAMPOLINE, TRAP_CONTEXT},
+    config::TRAMPOLINE,
     println,
     syscall::syscall,
     task::{
-        check_signals_error_of_current, current_add_signal, current_task_satp, current_task_trap_cx, exit_current_and_run_next, handle_signals, suspend_current_and_run_next, SignalFlags
+        check_signals_of_current, current_add_signal, current_task_satp, current_task_trap_cx,
+        current_task_trap_cx_user_va, exit_current_and_run_next, suspend_current_and_run_next,
+        SignalFlags,
     },
     timer::set_next_trigger,
 };
 use core::arch::{asm, global_asm};
 use riscv::register::{
     scause::{self, Exception, Interrupt, Trap},
-    sie, stval, stvec,
+    sepc, sie, stval, stvec,
 };
 
 mod context;
@@ -21,7 +23,8 @@ global_asm!(include_str!("trap.S"));
 
 #[unsafe(no_mangle)]
 pub fn trap_from_kernel() -> ! {
-    panic!("a trap from kernel!");
+    println!("stval = {:#x}, sepc = {:#x}", stval::read(), sepc::read());
+    panic!("a trap {:?} from kernel!", scause::read().cause());
 }
 
 fn set_kernel_trap_entry() {
@@ -65,6 +68,12 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::LoadPageFault)
         | Trap::Exception(Exception::InstructionFault)
         | Trap::Exception(Exception::InstructionPageFault) => {
+            println!(
+                "[debug] [kernel] trap {:?}, stval = {:#x}, sepc = {:#x}",
+                scause.cause(),
+                stval::read(),
+                sepc::read()
+            );
             current_add_signal(SignalFlags::SIGSEGV);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
@@ -82,8 +91,7 @@ pub fn trap_handler() -> ! {
             );
         }
     }
-    handle_signals();
-    if let Some((errno, msg)) = check_signals_error_of_current() {
+    if let Some((errno, msg)) = check_signals_of_current() {
         println!("[kernel] {}", msg);
         exit_current_and_run_next(errno);
     }
@@ -93,6 +101,8 @@ pub fn trap_handler() -> ! {
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
     set_user_trap_entry();
+    let trap_cx_user_va = current_task_trap_cx_user_va();
+    let user_satp = current_task_satp();
     unsafe extern "C" {
         unsafe fn __alltraps();
         unsafe fn __restore();
@@ -103,8 +113,8 @@ pub fn trap_return() -> ! {
             "fence.i",
             "jr {restore_va}",
             restore_va = in(reg) restore_va,
-            in("a0") TRAP_CONTEXT,
-            in("a1") current_task_satp(),
+            in("a0") trap_cx_user_va,
+            in("a1") user_satp,
             options(noreturn)
         )
     }

@@ -6,10 +6,11 @@ pub struct TrapContext {
     pub gprs: [usize; 32],
     pub sstatus: Sstatus,
     pub sepc: usize,
-    // kernel_satp, kernel_sp, trap_handler are not part of the context.
+    // kernel_satp, kernel_stack_top, trap_handler are not part of the context.
     // They are initialized when app_initial_context is called, and their value will not change since then.
     pub kernel_satp: usize,
-    pub kernel_sp: usize, // the va (in the kernel address space) of app kernel stack pointer
+    /// the address of app kernel stack top in the kernel adress space
+    pub kernel_stack_top: usize,
     pub trap_handler: usize,
 }
 
@@ -18,7 +19,7 @@ impl TrapContext {
         entry_point: usize, // va of the entry point of the user program
         user_sp: usize,
         kernel_satp: usize,
-        kernel_sp: usize,
+        kernel_stack_top: usize,
         trap_handler: usize,
     ) -> Self {
         let mut gprs: [usize; 32] = [0; 32];
@@ -30,7 +31,7 @@ impl TrapContext {
             sstatus: sstatus,
             sepc: entry_point,
             kernel_satp: kernel_satp,
-            kernel_sp: kernel_sp,
+            kernel_stack_top: kernel_stack_top,
             trap_handler: trap_handler,
         }
     }

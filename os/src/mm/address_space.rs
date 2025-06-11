@@ -6,15 +6,12 @@ use super::{
 };
 use crate::{
     board::MMIO,
-    config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT, USER_STACK_SIZE},
+    config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE},
     println,
-    sync::UPSafeCell,
 };
-use alloc::sync::Arc;
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use bitflags::bitflags;
 use core::{arch::asm, cmp::min};
-use lazy_static::lazy_static;
 use riscv::register::satp;
 
 unsafe extern "C" {
@@ -157,6 +154,7 @@ impl AddressSpace {
     pub fn from_existed_user(user_space: &Self) -> Self {
         let mut address_space = Self::new_bare();
         address_space.map_trampoline();
+        // Copy data sections/trap context/user stack
         for segment in user_space.segments.iter() {
             address_space.add_segment(MemorySegment::from_other(segment), None);
             for vpn in segment.vpn_range {
@@ -254,7 +252,7 @@ impl AddressSpace {
         address_space
     }
 
-    // return (address_space, va of user stack pointer, the entry point of the program)
+    /// Return (address_space, user_stack_base, the entry point of the program).
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
         let mut address_space = AddressSpace::new_bare();
         // User address space does not have the ownership of the physical frame where the trampoline code resides.
@@ -291,29 +289,10 @@ impl AddressSpace {
         }
         let segment_end_va: VirtAddr = segment_end_vpn.into();
         // guard page between segment_end and user_stack
-        let user_stack_bottom = segment_end_va.0 + PAGE_SIZE;
-        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
-        address_space.add_segment(
-            MemorySegment::new(
-                user_stack_bottom.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                Permission::R | Permission::W | Permission::U,
-            ),
-            None,
-        );
-        address_space.add_segment(
-            MemorySegment::new(
-                TRAP_CONTEXT.into(),
-                TRAMPOLINE.into(),
-                MapType::Framed,
-                Permission::R | Permission::W,
-            ),
-            None,
-        );
+        let user_stack_base = segment_end_va.0 + PAGE_SIZE;
         (
             address_space,
-            user_stack_top,
+            user_stack_base,
             elf.header.pt2.entry_point() as usize,
         )
     }
@@ -370,19 +349,10 @@ impl AddressSpace {
     }
 }
 
-lazy_static! {
-    pub static ref KERNEL_SPACE: Arc<UPSafeCell<AddressSpace>> =
-        Arc::new(UPSafeCell::new(AddressSpace::new_kernel()));
-}
-
-pub fn kernel_satp() -> usize {
-    KERNEL_SPACE.exclusive_access().satp()
-}
-
 #[allow(unused)]
 #[unsafe(no_mangle)]
 pub fn remap_test() {
-    let mut kernel_space = KERNEL_SPACE.exclusive_access();
+    let mut kernel_space = crate::mm::KERNEL_SPACE.exclusive_access();
     let mid_text: VirtAddr = ((stext as usize + etext as usize) / 2).into();
     let mid_rodata: VirtAddr = ((srodata as usize + erodata as usize) / 2).into();
     let mid_data: VirtAddr = ((sdata as usize + edata as usize) / 2).into();

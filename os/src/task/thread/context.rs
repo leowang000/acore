@@ -17,9 +17,9 @@ impl TaskContext {
         }
     }
 
-    pub fn goto_trap_return(kernel_sp: usize) -> Self {
+    pub fn goto_trap_return(kernel_stack_top: usize) -> Self {
         Self {
-            sp: kernel_sp,
+            sp: kernel_stack_top,
             ra: trap_return as usize,
             s: [0; 12],
         }
