@@ -4,6 +4,7 @@ use crate::{
         process::ProcessControlBlock,
         thread::{TaskStatus, TaskUserResource},
     },
+    timer::remove_timer,
 };
 use alloc::{sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
@@ -18,7 +19,7 @@ pub use process::{pid_alloc, PidHandle};
 pub use scheduler::{
     add_task, current_kernel_stack_top, current_process, current_task, current_task_satp,
     current_task_trap_cx, current_task_trap_cx_user_va, pid2process, remove_from_pid2process,
-    remove_task, run_tasks, schedule, take_current_task,
+    remove_task, run_tasks, schedule, take_current_task, wakeup_task,
 };
 pub use signal::{SignalAction, SignalActionTable, SignalFlags};
 pub use thread::{KernelStack, TaskContext, TaskControlBlock};
@@ -45,6 +46,16 @@ pub fn suspend_current_and_run_next() {
     task_inner.status = TaskStatus::Ready;
     drop(task_inner);
     add_task(task);
+    schedule(current_task_cx_ptr);
+}
+
+pub fn block_current_and_run_next() {
+    let task = take_current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+    let current_task_cx_ptr = &mut task_inner.task_cx as *mut _;
+    task_inner.status = TaskStatus::Blocked;
+    drop(task_inner);
+    drop(task);
     schedule(current_task_cx_ptr);
 }
 
@@ -79,7 +90,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         let mut recycle_resources: Vec<TaskUserResource> = Vec::new();
         for task in process_inner.tasks.iter().filter(|t| t.is_some()) {
             let task = task.as_ref().unwrap();
-            // Simply remove the task.
             remove_inactive_task(task.clone());
             let mut task_inner = task.inner_exclusive_access();
             if let Some(resource) = task_inner.user_resource.take() {
@@ -96,6 +106,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         process_inner.address_space.recycle_data_pages();
         // Drop file descriptors.
         process_inner.fd_table.clear();
+        // Drop mutexes.
+        process_inner.mutex_list.clear();
+        // Drop semaphores.
+        process_inner.semaphore_list.clear();
+        // Drop condvars.
+        process_inner.condvar_list.clear();
         // Remove all threads, except for the main thread. Deallocate the kernel stacks of these threads.
         // We are still using the kernel stack of the main thread, so the TCB of the main thread must not be deallocated.
         // The TCB (including the kernel stack) of the main thread will be deallocated when the processs is reaped via waitpid.
@@ -121,9 +137,10 @@ pub fn current_add_signal(signal: SignalFlags) {
     current_process().inner_exclusive_access().signals |= signal;
 }
 
+/// Remove all Arc references pointing to *task, except those that belong to the corresponding PCB.
 pub fn remove_inactive_task(task: Arc<TaskControlBlock>) {
     remove_task(task.clone());
-    // remove_timer(task.clone());
+    remove_timer(task.clone());
 }
 
 // fn call_kernel_signal_handler(signal: SignalFlags) {

@@ -8,4 +8,4 @@ pub use processor::{
     current_kernel_stack_top, current_process, current_task, current_task_satp,
     current_task_trap_cx, current_task_trap_cx_user_va, run_tasks, schedule, take_current_task,
 };
-pub use task_manager::{add_task, remove_task};
+pub use task_manager::{add_task, remove_task, wakeup_task};

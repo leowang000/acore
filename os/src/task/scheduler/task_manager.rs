@@ -1,4 +1,7 @@
-use crate::{sync::UPSafeCell, task::TaskControlBlock};
+use crate::{
+    sync::UPSafeCell,
+    task::{thread::TaskStatus, TaskControlBlock},
+};
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use lazy_static::lazy_static;
 
@@ -47,4 +50,9 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
 
 pub fn remove_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.exclusive_access().remove(task);
+}
+
+pub fn wakeup_task(task: Arc<TaskControlBlock>) {
+    task.inner_exclusive_access().status = TaskStatus::Ready;
+    add_task(task);
 }

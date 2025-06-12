@@ -1,7 +1,7 @@
 use crate::{
     fs::{File, Stdin, Stdout},
     mm::{kernel_satp, translated_refmut, AddressSpace},
-    sync::UPSafeCell,
+    sync::{Condvar, Mutex, Semaphore, UPSafeCell},
     task::{
         add_task, scheduler::insert_into_pid2process, RecycleAllocator, SignalFlags,
         TaskControlBlock,
@@ -30,6 +30,9 @@ pub struct ProcessControlBlockInner {
     pub signals: SignalFlags,
     pub tasks: Vec<Option<Arc<TaskControlBlock>>>,
     pub tid_allocator: RecycleAllocator,
+    pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
+    pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
+    pub condvar_list: Vec<Option<Arc<Condvar>>>,
 }
 
 pub struct ProcessControlBlock {
@@ -94,6 +97,9 @@ impl ProcessControlBlock {
                 signals: SignalFlags::empty(),
                 tasks: Vec::new(),
                 tid_allocator: RecycleAllocator::new(),
+                mutex_list: Vec::new(),
+                semaphore_list: Vec::new(),
+                condvar_list: Vec::new(),
             }),
         });
         // Create main thread.
@@ -206,6 +212,9 @@ impl ProcessControlBlock {
                 signals: SignalFlags::empty(),
                 tasks: Vec::new(),
                 tid_allocator: RecycleAllocator::new(),
+                mutex_list: Vec::new(),
+                semaphore_list: Vec::new(),
+                condvar_list: Vec::new(),
             }),
         });
         // Create main thread of child process.

@@ -1,6 +1,6 @@
 use crate::{
     config::{KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE},
-    mm::{Permission, VirtAddr, KERNEL_SPACE},
+    mm::{kernel_add_segment_framed, kernel_remove_segment_with_start_vpn, Permission, VirtAddr},
     sync::UPSafeCell,
     task::RecycleAllocator,
 };
@@ -34,9 +34,7 @@ impl KernelStack {
 impl Drop for KernelStack {
     fn drop(&mut self) {
         let kernel_stack_bottom_va: VirtAddr = self.get_bottom().into();
-        KERNEL_SPACE
-            .exclusive_access()
-            .remove_segment_with_start_vpn(kernel_stack_bottom_va.into());
+        kernel_remove_segment_with_start_vpn(kernel_stack_bottom_va.into());
         KERNEL_STACK_ALLOCATOR.exclusive_access().dealloc(self.id);
     }
 }
@@ -44,7 +42,7 @@ impl Drop for KernelStack {
 pub fn alloc_kernel_stack() -> KernelStack {
     let id = KERNEL_STACK_ALLOCATOR.exclusive_access().alloc();
     let (kernel_stack_bottom, kernel_stack_top) = kernel_stack_position(id);
-    KERNEL_SPACE.exclusive_access().add_segment_framed(
+    kernel_add_segment_framed(
         kernel_stack_bottom.into(),
         kernel_stack_top.into(),
         Permission::R | Permission::W,

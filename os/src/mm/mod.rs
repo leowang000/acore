@@ -17,12 +17,24 @@ pub use page_table::{
 };
 
 lazy_static! {
-    pub static ref KERNEL_SPACE: Arc<UPSafeCell<AddressSpace>> =
+    static ref KERNEL_SPACE: Arc<UPSafeCell<AddressSpace>> =
         Arc::new(UPSafeCell::new(AddressSpace::new_kernel()));
 }
 
 pub fn kernel_satp() -> usize {
     KERNEL_SPACE.exclusive_access().satp()
+}
+
+pub fn kernel_add_segment_framed(start_va: VirtAddr, end_va: VirtAddr, permission: Permission) {
+    KERNEL_SPACE
+        .exclusive_access()
+        .add_segment_framed(start_va, end_va, permission);
+}
+
+pub fn kernel_remove_segment_with_start_vpn(start_vpn: VirtPageNum) {
+    KERNEL_SPACE
+        .exclusive_access()
+        .remove_segment_with_start_vpn(start_vpn);
 }
 
 pub fn init() {
