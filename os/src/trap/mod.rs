@@ -4,8 +4,8 @@ use crate::{
     syscall::syscall,
     task::{
         check_signals_of_current, current_add_signal, current_task_satp, current_task_trap_cx,
-        current_task_trap_cx_user_va, exit_current_and_run_next, suspend_current_and_run_next,
-        SignalFlags,
+        current_task_trap_cx_user_va, exit_current_and_run_next, handle_signals,
+        suspend_current_and_run_next, SignalFlags,
     },
     timer::check_timer,
 };
@@ -94,6 +94,7 @@ pub fn trap_handler() -> ! {
             );
         }
     }
+    handle_signals();
     if let Some((errno, msg)) = check_signals_of_current() {
         println!("[kernel] {}", msg);
         exit_current_and_run_next(errno);

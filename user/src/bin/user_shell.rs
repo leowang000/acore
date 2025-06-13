@@ -122,7 +122,7 @@ pub fn main() -> i32 {
                         println!("Invalid command: Inputs/Outputs cannot be correctly binded!");
                     } else {
                         let mut pipes: Vec<[usize; 2]> = Vec::new();
-                        if !process_arguments_list.is_empty() {
+                        if process_arguments_list_len > 0 {
                             for _ in 0..process_arguments_list_len - 1 {
                                 let mut pipe_fd = [0usize; 2];
                                 pipe(&mut pipe_fd);
@@ -141,7 +141,7 @@ pub fn main() -> i32 {
                                 if !input.is_empty() {
                                     let input_fd = open(input.as_str(), OpenFlags::RDONLY);
                                     if input_fd == -1 {
-                                        println!("Error when opening file{}", input);
+                                        println!("Error when opening file {}", input);
                                         return -4;
                                     }
                                     let input_fd = input_fd as usize;

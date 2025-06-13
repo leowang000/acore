@@ -1,4 +1,4 @@
-use crate::{getpid, kill, println, SignalFlags};
+use crate::{getpid, kill, println, SIGABRT};
 
 #[panic_handler]
 fn panic_handler(info: &core::panic::PanicInfo) -> ! {
@@ -12,6 +12,6 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     } else {
         println!("Panicked: {}", info.message());
     }
-    kill(getpid() as usize, SignalFlags::SIGABRT.bits());
+    kill(getpid() as usize, SIGABRT);
     unreachable!();
 }

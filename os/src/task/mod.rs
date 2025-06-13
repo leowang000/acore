@@ -1,12 +1,13 @@
 use crate::{
     fs::{open_file, OpenFlags},
+    println,
     task::{
         process::ProcessControlBlock,
         thread::{TaskStatus, TaskUserResource},
     },
     timer::remove_timer,
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use lazy_static::lazy_static;
 
 mod process;
@@ -21,7 +22,7 @@ pub use scheduler::{
     current_task_trap_cx, current_task_trap_cx_user_va, pid2process, remove_from_pid2process,
     remove_task, schedule, take_current_task, wakeup_task,
 };
-pub use signal::{SignalAction, SignalActionTable, SignalFlags};
+pub use signal::{SignalAction, SignalActionTable, SignalFlags, SIG_CNT};
 pub use thread::{KernelStack, TaskContext, TaskControlBlock};
 pub use utils::RecycleAllocator;
 
@@ -75,8 +76,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // task_inner and task must be dropped manually, because schedule never returns.
     drop(task_inner);
     drop(task);
-    // If the main thread exits, the process should be terminated.
-    if tid == 0 {
+    // If the main thread exits or the process is killed, the process should be terminated.
+    if tid == 0 || process.inner_exclusive_access().killed {
         let pid = process.get_pid();
         remove_from_pid2process(pid);
         let mut process_inner = process.inner_exclusive_access();
@@ -100,6 +101,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 recycle_resources.push(resource);
             }
         }
+        // dealloc_user_resource require access to PCB inner, so we need to collect those user res first,
+        // then release process_inner for now to avoid double borrow.
         drop(process_inner);
         // Deallocate the user resources first. Otherwise, these pages will be deallocated twice.
         recycle_resources.clear();
@@ -116,13 +119,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         process_inner.semaphore_list.clear();
         // Drop condvars.
         process_inner.condvar_list.clear();
-        // Remove all threads, except for the main thread. Deallocate the kernel stacks of these threads.
-        // We are still using the kernel stack of the main thread, so the TCB of the main thread must not be deallocated.
-        // The TCB (including the kernel stack) of the main thread will be deallocated when the processs is reaped via waitpid.
+        // Remove all threads, except for the current thread. Deallocate the kernel stacks of these threads.
+        // We are still using the kernel stack of the current thread, so the TCB of the current thread must not be deallocated.
+        // The TCB (including the kernel stack) of the current thread will be deallocated when the processs is reaped via waitpid.
         // There is no need to deallocate the tids, because the process itself is dead.
-        while process_inner.tasks.len() > 1 {
-            process_inner.tasks.pop();
-        }
+        let current_task_vec = vec![process_inner.tasks[tid].clone()];
+        process_inner.tasks = current_task_vec;
     }
     // process must be dropped manually, because schedule never returns.
     drop(process);
@@ -147,88 +149,86 @@ pub fn remove_inactive_task(task: Arc<TaskControlBlock>) {
     remove_timer(task.clone());
 }
 
-// fn call_kernel_signal_handler(signal: SignalFlags) {
-//     let task = current_task().unwrap();
-//     let mut inner = task.inner_exclusive_access();
-//     match signal {
-//         SignalFlags::SIGSTOP => {
-//             if inner.signals.contains(SignalFlags::SIGSTOP) {
-//                 inner.frozen = true;
-//                 inner.signals ^= SignalFlags::SIGSTOP;
-//             }
-//         }
-//         SignalFlags::SIGCONT => {
-//             if inner.signals.contains(SignalFlags::SIGCONT) {
-//                 inner.frozen = false;
-//                 inner.signals ^= SignalFlags::SIGCONT;
-//             }
-//         }
-//         _ => {
-//             inner.killed = true;
-//         }
-//     }
-// }
+fn call_kernel_signal_handler(signal: SignalFlags) {
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    match signal {
+        SignalFlags::SIGSTOP => {
+            inner.frozen = true;
+            inner.signals ^= SignalFlags::SIGSTOP;
+        }
+        SignalFlags::SIGCONT => {
+            inner.frozen = false;
+            inner.signals ^= SignalFlags::SIGCONT;
+        }
+        _ => {
+            inner.killed = true;
+        }
+    }
+}
 
-// fn call_user_signal_handler(signum: usize, signal: SignalFlags) {
-//     let task = current_task().unwrap();
-//     let mut inner = task.inner_exclusive_access();
-//     let handler = inner.signal_actions.table[signum].handler;
-//     if handler != 0 {
-//         inner.handling_signal = signum as isize;
-//         inner.signals ^= signal;
-//         let trap_ctx = inner.get_trap_cx();
-//         // copy the original trap_ctx to trap_ctx_backup
-//         inner.trap_ctx_backup = Some(*trap_ctx);
-//         trap_ctx.sepc = handler;
-//         trap_ctx.gprs[10] = signum;
-//     } else {
-//         // default action
-//         println!(
-//             "[kernel] task/call_user_signal_handler: default action: ignore it or kill process"
-//         );
-//     }
-// }
+fn call_user_signal_handler(signum: usize, signal: SignalFlags) {
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+    let handler = process_inner.signal_actions.table[signum].handler;
+    if handler != 0 {
+        process_inner.handling_signal = signum as isize;
+        process_inner.signals ^= signal;
+        let task = current_task();
+        let mut task_inner = task.inner_exclusive_access();
+        let trap_ctx = task_inner.get_trap_cx();
+        // Copy the original trap_ctx to trap_ctx_backup.
+        task_inner.trap_cx_backup = Some(*trap_ctx);
+        trap_ctx.sepc = handler;
+        trap_ctx.gprs[10] = signum;
+    } else {
+        // default action
+        println!(
+            "[kernel] task/call_user_signal_handler: default action: ignore it or kill process"
+        );
+    }
+}
 
-// fn check_pending_signals() {
-//     for signum in 0..=MAX_SIG {
-//         let task = current_task().unwrap();
-//         let inner = task.inner_exclusive_access();
-//         let signal = SignalFlags::from_bits(1 << signum).unwrap();
-//         if inner.signals.contains(signal) && !inner.signal_mask.contains(signal) {
-//             let handling_signal = inner.handling_signal;
-//             if handling_signal == -1
-//                 || !inner.signal_actions.table[handling_signal as usize]
-//                     .mask
-//                     .contains(signal)
-//             {
-//                 drop(inner);
-//                 drop(task);
-//                 if signal == SignalFlags::SIGKILL
-//                     || signal == SignalFlags::SIGSTOP
-//                     || signal == SignalFlags::SIGCONT
-//                     || signal == SignalFlags::SIGDEF
-//                 {
-//                     call_kernel_signal_handler(signal);
-//                 } else {
-//                     call_user_signal_handler(signum, signal);
-//                     return;
-//                 }
-//             }
-//         }
-//     }
-// }
+fn check_pending_signals() {
+    for signum in 0..SIG_CNT {
+        let process = current_process();
+        let inner = process.inner_exclusive_access();
+        let signal = SignalFlags::from_bits(1 << signum).unwrap();
+        if inner.signals.contains(signal) && !inner.signal_mask.contains(signal) {
+            let handling_signal = inner.handling_signal;
+            if handling_signal == -1
+                || !inner.signal_actions.table[handling_signal as usize]
+                    .mask
+                    .contains(signal)
+            {
+                drop(inner);
+                drop(process);
+                if signal == SignalFlags::SIGKILL
+                    || signal == SignalFlags::SIGSTOP
+                    || signal == SignalFlags::SIGCONT
+                    || signal == SignalFlags::SIGDEF
+                {
+                    call_kernel_signal_handler(signal);
+                } else {
+                    call_user_signal_handler(signum, signal);
+                    return;
+                }
+            }
+        }
+    }
+}
 
-// pub fn handle_signals() {
-//     loop {
-//         check_pending_signals();
-//         let (frozen, killed) = {
-//             let task = current_task().unwrap();
-//             let inner = task.inner_exclusive_access();
-//             (inner.frozen, inner.killed)
-//         };
-//         if killed || !frozen {
-//             break;
-//         }
-//         suspend_current_and_run_next();
-//     }
-// }
+pub fn handle_signals() {
+    loop {
+        check_pending_signals();
+        let (frozen, killed) = {
+            let process = current_process();
+            let inner = process.inner_exclusive_access();
+            (inner.frozen, inner.killed)
+        };
+        if killed || !frozen {
+            break;
+        }
+        suspend_current_and_run_next();
+    }
+}

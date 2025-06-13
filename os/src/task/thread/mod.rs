@@ -24,6 +24,7 @@ pub struct TaskControlBlockInner {
     pub task_cx: TaskContext,
     pub trap_cx_ppn: PhysPageNum,
     pub exit_code: Option<i32>,
+    pub trap_cx_backup: Option<TrapContext>,
 }
 
 pub struct TaskControlBlock {
@@ -58,6 +59,7 @@ impl TaskControlBlock {
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 trap_cx_ppn: trap_cx_ppn,
                 exit_code: None,
+                trap_cx_backup: None
             }),
         }
     }

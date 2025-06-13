@@ -1,14 +1,13 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
-
 use crate::{
     fs::{open_file, OpenFlags},
     mm::{translated_ref, translated_refmut, translated_str},
     task::{
-        current_process, current_task_satp, exit_current_and_run_next, pid2process,
-        suspend_current_and_run_next, SignalFlags,
+        current_process, current_task, current_task_satp, exit_current_and_run_next, pid2process,
+        suspend_current_and_run_next, SignalAction, SignalFlags, SIG_CNT,
     },
     timer::get_time_ms,
 };
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 pub fn sys_exit(exit_code: i32) -> ! {
     exit_current_and_run_next(exit_code);
@@ -20,9 +19,12 @@ pub fn sys_yield() -> isize {
     0
 }
 
-pub fn sys_kill(pid: usize, signal: u32) -> isize {
+pub fn sys_kill(pid: usize, signum: i32) -> isize {
+    if signum as usize >= SIG_CNT {
+        return -1;
+    }
     if let Some(process) = pid2process(pid) {
-        if let Some(flag) = SignalFlags::from_bits(signal) {
+        if let Some(flag) = SignalFlags::from_bits(1 << signum) {
             let mut inner = process.inner_exclusive_access();
             if inner.signals.contains(flag) {
                 return -1;
@@ -37,53 +39,55 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     }
 }
 
-// fn check_sigaction_error(flag: SignalFlags, action: usize, old_action: usize) -> bool {
-//     action == 0 || old_action == 0 || flag == SignalFlags::SIGKILL || flag == SignalFlags::SIGSTOP
-// }
+fn check_sigaction_error(flag: SignalFlags, action: usize, old_action: usize) -> bool {
+    action == 0 || old_action == 0 || flag == SignalFlags::SIGKILL || flag == SignalFlags::SIGSTOP
+}
 
-// pub fn sys_sigaction(
-//     signum: i32,
-//     action: *const SignalAction,
-//     old_action: *mut SignalAction,
-// ) -> isize {
-//     let satp = current_task_satp();
-//     let task = current_task().unwrap();
-//     let mut inner = task.inner_exclusive_access();
-//     if signum as usize > MAX_SIG {
-//         return -1;
-//     }
-//     if let Some(flag) = SignalFlags::from_bits(1 << signum) {
-//         if check_sigaction_error(flag, action as usize, old_action as usize) {
-//             return -1;
-//         }
-//         *translated_refmut(satp, old_action) = inner.signal_actions.table[signum as usize];
-//         inner.signal_actions.table[signum as usize] = *translated_ref(satp, action);
-//         0
-//     } else {
-//         -1
-//     }
-// }
+pub fn sys_sigaction(
+    signum: i32,
+    action: *const SignalAction,
+    old_action: *mut SignalAction,
+) -> isize {
+    let satp = current_task_satp();
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    if signum as usize >= SIG_CNT {
+        return -1;
+    }
+    if let Some(flag) = SignalFlags::from_bits(1 << signum) {
+        if check_sigaction_error(flag, action as usize, old_action as usize) {
+            return -1;
+        }
+        *translated_refmut(satp, old_action) = inner.signal_actions.table[signum as usize];
+        inner.signal_actions.table[signum as usize] = *translated_ref(satp, action);
+        0
+    } else {
+        -1
+    }
+}
 
-// pub fn sys_sigprocmask(mask: u32) -> isize {
-//     let task = current_task().unwrap();
-//     let mut inner = task.inner_exclusive_access();
-//     let old_mask = inner.signal_mask;
-//     if let Some(flag) = SignalFlags::from_bits(mask) {
-//         inner.signal_mask = flag;
-//         old_mask.bits() as isize
-//     } else {
-//         -1
-//     }
-// }
+pub fn sys_sigprocmask(mask: u32) -> isize {
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    let old_mask = inner.signal_mask;
+    if let Some(flag) = SignalFlags::from_bits(mask) {
+        inner.signal_mask = flag;
+        old_mask.bits() as isize
+    } else {
+        -1
+    }
+}
 
-// pub fn sys_sigreturn() -> isize {
-//     let task = current_task().unwrap();
-//     let mut inner = task.inner_exclusive_access();
-//     inner.handling_signal = -1;
-//     let trap_ctx = inner.get_trap_cx();
-//     *trap_ctx = inner.trap_ctx_backup.unwrap();
-//     trap_ctx.gprs[10] as isize
-// }
+pub fn sys_sigreturn() -> isize {
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.handling_signal = -1;
+    let task = current_task();
+    let task_inner = task.inner_exclusive_access();
+    let trap_ctx = task_inner.get_trap_cx();
+    *trap_ctx = task_inner.trap_cx_backup.unwrap();
+    trap_ctx.gprs[10] as isize
+}
 
 pub fn sys_get_time() -> isize {
     get_time_ms() as isize
