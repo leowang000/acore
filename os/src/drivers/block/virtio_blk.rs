@@ -1,5 +1,5 @@
 use crate::{
-    board::MMIO,
+    config::VIRT_VIRTIO,
     mm::{
         frame_alloc, frame_dealloc, kernel_satp, FrameTracker, PageTableView, PhysAddr,
         PhysPageNum, StepByOne,
@@ -52,14 +52,12 @@ impl Hal for VirtioHal {
     }
 }
 
-const VIRT_IO_0: usize = MMIO[1].0;
-
 pub struct VirtIOBlock(UPSafeCell<VirtIOBlk<'static, VirtioHal>>);
 
 impl VirtIOBlock {
     pub fn new() -> Self {
         Self(UPSafeCell::new(
-            VirtIOBlk::new(unsafe { &mut *(VIRT_IO_0 as *mut VirtIOHeader) }).unwrap(),
+            VirtIOBlk::new(unsafe { &mut *(VIRT_VIRTIO as *mut VirtIOHeader) }).unwrap(),
         ))
     }
 }

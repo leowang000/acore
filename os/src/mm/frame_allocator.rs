@@ -79,7 +79,7 @@ impl Drop for FrameTracker {
 type FrameAllocatorImpl = StackFrameAllocator;
 
 lazy_static! {
-    pub static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
+    static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
         UPSafeCell::new(FrameAllocatorImpl::new());
 }
 

@@ -5,8 +5,7 @@ use super::{
     FrameTracker, PageTableEntry, PhysAddr, PhysPageNum, VirtAddr, VirtPageNum,
 };
 use crate::{
-    board::MMIO,
-    config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE},
+    config::{MEMORY_END, MMIO, PAGE_SIZE, TRAMPOLINE},
     println,
 };
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};

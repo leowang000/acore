@@ -7,12 +7,12 @@ use crate::{
         current_task_trap_cx_user_va, exit_current_and_run_next, suspend_current_and_run_next,
         SignalFlags,
     },
-    timer::{check_timer, set_next_trigger},
+    timer::check_timer,
 };
 use core::arch::{asm, global_asm};
 use riscv::register::{
     scause::{self, Exception, Interrupt, Trap},
-    sepc, sie, stval, stvec,
+    sepc, sie, sip, stval, stvec,
 };
 
 mod context;
@@ -41,11 +41,10 @@ fn set_user_trap_entry() {
 
 pub fn init() {
     set_kernel_trap_entry();
-}
-
-pub fn enable_timer_interrupt() {
     unsafe {
         sie::set_stimer();
+        sie::set_sext();
+        sie::set_ssoft();
     }
 }
 
@@ -79,8 +78,11 @@ pub fn trap_handler() -> ! {
         Trap::Exception(Exception::IllegalInstruction) => {
             current_add_signal(SignalFlags::SIGILL);
         }
-        Trap::Interrupt(Interrupt::SupervisorTimer) => {
-            set_next_trigger();
+        Trap::Interrupt(Interrupt::SupervisorSoft) => {
+            let sip = sip::read().bits();
+            unsafe {
+                asm!("csrw sip, {new_sip}", new_sip = in(reg) sip ^ 2);
+            }
             check_timer();
             suspend_current_and_run_next();
         }

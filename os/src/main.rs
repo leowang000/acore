@@ -4,7 +4,8 @@
 
 extern crate alloc;
 
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+use riscv::register::{mepc, mstatus, pmpaddr0, pmpcfg0, satp};
 
 pub mod fs;
 pub mod lang_items;
@@ -36,16 +37,42 @@ fn clear_bss() {
 }
 
 #[unsafe(no_mangle)]
-pub fn rust_main() -> ! {
+unsafe fn rust_boot() -> ! {
+    // Switch to S-mode after mret.
+    mstatus::set_mpp(mstatus::MPP::Supervisor);
+    // Jump to rust_main after mret.
+    mepc::write(rust_main as usize);
+    // Disable page table for M-mode.
+    satp::write(0);
+    // Delegate all possible exceptions to S-mode.
+    // Allows S-mode to handle its own exceptions without M-mode intervention.
+    asm!("csrw medeleg, {}", in(reg) 0xffff);
+    // Delegate all possible interrupts to S-mode.
+    // Enables S-mode to directly manage timer, software and external interrupts.
+    asm!("csrw mideleg, {}", in(reg) 0xffff);
+    // Set Physical Memory Protection address register 0, defining a vast protected region boundary
+    // covering nearly the entire addressable physical memory space (0x3fffffffffffff = 2 ^ 54 - 1).
+    pmpaddr0::write(0x3fffffffffffff);
+    // Configure Physical Memory Protection settings via pmpcfg0 register.
+    // Value 0xf (0b1111) enables Read, Write, Execute permissions with NAPOT addressing mode.
+    pmpcfg0::write(0xf);
+    // Init the timer.
+    timer::init();
+    asm!("mret", options(noreturn))
+}
+
+fn rust_init() {
     clear_bss();
-    println!("[kernel] Hello, world!");
+    sbi::uart_init();
     mm::init();
-    mm::test();
     trap::init();
-    trap::enable_timer_interrupt();
-    timer::set_next_trigger();
+}
+
+#[unsafe(no_mangle)]
+fn rust_main() -> ! {
+    rust_init();
+    println!("[kernel] Hello, world!");
     fs::list_apps();
-    task::add_initproc();
     task::run_tasks();
     unreachable!();
 }

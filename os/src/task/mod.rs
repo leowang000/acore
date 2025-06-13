@@ -19,7 +19,7 @@ pub use process::{pid_alloc, PidHandle};
 pub use scheduler::{
     add_task, current_kernel_stack_top, current_process, current_task, current_task_satp,
     current_task_trap_cx, current_task_trap_cx_user_va, pid2process, remove_from_pid2process,
-    remove_task, run_tasks, schedule, take_current_task, wakeup_task,
+    remove_task, schedule, take_current_task, wakeup_task,
 };
 pub use signal::{SignalAction, SignalActionTable, SignalFlags};
 pub use thread::{KernelStack, TaskContext, TaskControlBlock};
@@ -34,9 +34,13 @@ lazy_static! {
 }
 
 /// Initialize INITPROC. INITPROC will not be initialized before it is accessed.
-pub fn add_initproc() {
-    // let _ = INITPROC.clone();
-    let _initproc = INITPROC.clone();
+fn add_initproc() {
+    let _ = INITPROC.clone();
+}
+
+pub fn run_tasks() {
+    add_initproc();
+    scheduler::run_tasks();
 }
 
 pub fn suspend_current_and_run_next() {

@@ -15,7 +15,7 @@ impl File for Stdin {
 
     fn read(&self, mut buf: UserBuffer) -> usize {
         assert_eq!(buf.len(), 1);
-        let mut c: usize;
+        let mut c: u8;
         loop {
             c = console_getchar();
             if c == 0 {
@@ -25,7 +25,7 @@ impl File for Stdin {
                 break;
             }
         }
-        unsafe { buf.buffers[0].as_mut_ptr().write_volatile(c as u8) };
+        unsafe { buf.buffers[0].as_mut_ptr().write_volatile(c) };
         1
     }
 

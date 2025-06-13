@@ -18,7 +18,7 @@ ifeq ($(MODE), release)
 endif
 
 # KERNEL ENTRY
-KERNEL_ENTRY_PA := 0x80200000
+KERNEL_ENTRY_PA := 0x80000000
 
 # Binutils
 OBJDUMP := rust-objdump --arch-name=riscv64
@@ -69,7 +69,7 @@ run: run-inner
 
 QEMU_ARGS := -machine virt \
 			 -nographic \
-			 -bios $(BOOTLOADER) \
+			 -bios none \
 			 -device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
 			 -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
 			 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0

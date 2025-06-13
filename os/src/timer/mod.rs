@@ -1,29 +1,45 @@
 use crate::{
-    config::CLOCK_FREQ,
-    sbi::set_timer,
+    board::MTIMECMP,
+    config::{CLOCK_FREQ, MTIME},
     sync::UPSafeCell,
     task::{wakeup_task, TaskControlBlock},
 };
 use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
-use core::cmp::Ordering;
+use core::{arch::global_asm, cmp::Ordering};
 use lazy_static::lazy_static;
-use riscv::register::time;
+use riscv::register::{mie, mscratch, mstatus, mtvec};
+
+global_asm!(include_str!("timer_trap.S"));
 
 const TICKS_PER_SEC: usize = 100;
 const MSEC_PER_SEC: usize = 1000;
 
+#[link_section = ".bss.stack"]
+static mut TIMER_SCRATCH: [usize; 5] = [0; 5];
+
+pub fn init() {
+    unsafe extern "C" {
+        unsafe fn __timer_trap();
+    }
+    unsafe {
+        TIMER_SCRATCH[3] = MTIMECMP;
+        TIMER_SCRATCH[4] = CLOCK_FREQ / TICKS_PER_SEC;
+        mtvec::write(__timer_trap as usize, mtvec::TrapMode::Direct);
+        mscratch::write(&raw mut TIMER_SCRATCH as usize);
+        mstatus::set_mie();
+        mie::set_mtimer();
+        (MTIMECMP as *mut usize).write_volatile(get_time() + CLOCK_FREQ / TICKS_PER_SEC);
+    }
+}
+
 /// Get the time in timer cycle count.
 pub fn get_time() -> usize {
-    time::read()
+    unsafe { (MTIME as *const usize).read_volatile() }
 }
 
 /// Get the time in ms.
 pub fn get_time_ms() -> usize {
-    time::read() / (CLOCK_FREQ / MSEC_PER_SEC)
-}
-
-pub fn set_next_trigger() {
-    set_timer(get_time() + CLOCK_FREQ / TICKS_PER_SEC);
+    get_time() / (CLOCK_FREQ / MSEC_PER_SEC)
 }
 
 pub struct TimerCondVar {
